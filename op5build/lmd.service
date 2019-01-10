@@ -1,0 +1,14 @@
+[Unit]
+Description=op5 lmd integration
+After=syslog.target network.target
+
+[Service]
+ExecStartPre=/bin/sed -i -e "s/\/rw\/live$/\/rw\/live_tmp/g" /opt/monitor/etc/mconf/livestatus.cfg
+ExecStartPre=/bin/systemctl restart naemon
+ExecStart=/opt/monitor/var/lmd/bin/lmd --config=/opt/monitor/var/lmd/lmd.ini --logfile=/opt/monitor/var/lmd/lmd.log &
+ExecStartPost=/bin/sleep 4
+ExecStartPost=/bin/chmod 777 /opt/monitor/var/rw/live
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
