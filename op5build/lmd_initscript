@@ -1,0 +1,78 @@
+#!/bin/sh
+#
+# Start / stop lmd
+#
+# chkconfig: 235 90 10
+#
+### BEGIN INIT INFO
+# Provides:          op5-lmd
+# Short-Description: op5 lmd
+# Description:       op5 lmd is a cached monitor
+### END INIT INFO
+
+. /etc/init.d/functions
+
+RETVAL=0
+prog="lmd"
+pidfile=/opt/monitor/var/lmd/lmd.run
+exe="/opt/monitor/var/lmd/bin/lmd --config=/opt/monitor/var/lmd/lmd.ini --logfile=/opt/monitor/var/lmd/lmd.log --pidfile=$pidfile"
+
+start() {
+	sed -i -e "s/\/rw\/live$/\/rw\/live_tmp/g" /opt/monitor/etc/mconf/livestatus.cfg
+	service naemon restart
+	echo -n $"Starting $prog: "
+	$exe &
+	RETVAL=$?
+	echo
+	sleep 4
+	chmod 777 /opt/monitor/var/rw/live
+	return $RETVAL
+}
+
+stop() {
+	echo -n $"Stopping $prog: "
+	killproc -p $pidfile /opt/monitor/var/lmd/bin/lmd
+	RETVAL=$?
+	echo
+	return $RETVAL
+}
+
+reload() {
+	stop
+	start
+}
+
+restart() {
+	stop
+	start
+}
+
+case "$1" in
+  start)
+	status -p $pidfile $prog && exit 0
+	start
+	;;
+  stop)
+	status -p $pidfile $prog || exit 0
+	stop
+	;;
+  restart)
+	restart
+	;;
+  reload)
+	reload
+	;;
+  condrestart)
+	status -p $pidfile $prog || exit 0
+	restart
+	;;
+  status)
+	status -p $pidfile $prog
+	RETVAL=$?
+	;;
+  *)
+	echo $"Usage: $0 {start|stop|status|restart|condrestart|reload}"
+	RETVAL=1
+esac
+
+exit $RETVAL
