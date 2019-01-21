@@ -10,7 +10,7 @@ Version:	%{op5version}
 Release:	%{op5release}%{?dist}
 Summary:	op5 monitor lmd integration
 
-License:	op5 monitor license
+License:	GPLv3
 URL:		http://www.op5.com
 Source:		%name-%version.tar.gz
 BuildRoot: 	%{_tmppath}/%{name}-%{version}
