@@ -37,7 +37,7 @@ var Build string
 
 const (
 	// VERSION contains the actual lmd version
-	VERSION = "1.4.2"
+	VERSION = "1.4.3"
 	// NAME defines the name of this project
 	NAME = "lmd"
 )
@@ -605,6 +605,7 @@ func ReadConfig(files []string) (conf *Config) {
 func logPanicExit() {
 	if r := recover(); r != nil {
 		log.Errorf("Panic: %s", r)
+		log.Errorf("Version: %s", Version())
 		log.Errorf("%s", debug.Stack())
 		os.Exit(1)
 	}

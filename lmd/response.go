@@ -53,12 +53,11 @@ var VirtKeyMap = map[string]VirtKeyMapTupel{
 	"section":                 {Index: -20, Key: "Section", Type: StringCol},
 	"parent":                  {Index: -21, Key: "PeerParent", Type: StringCol},
 	"configtool":              {Index: -22, Key: "", Type: HashMapCol},
-	"federation_key":          {Index: -23, Key: "", Type: StringCol},
-	"federation_name":         {Index: -24, Key: "", Type: StringCol},
-	"federation_addr":         {Index: -25, Key: "", Type: StringCol},
-	"federation_type":         {Index: -26, Key: "", Type: StringCol},
-	"federation_thruk_url":    {Index: -27, Key: "", Type: StringCol},
-	"empty":                   {Index: -28, Key: "", Type: StringCol},
+	"federation_key":          {Index: -23, Key: "", Type: StringListCol},
+	"federation_name":         {Index: -24, Key: "", Type: StringListCol},
+	"federation_addr":         {Index: -25, Key: "", Type: StringListCol},
+	"federation_type":         {Index: -26, Key: "", Type: StringListCol},
+	"empty":                   {Index: -27, Key: "", Type: StringCol},
 }
 
 // Response contains the livestatus response data as long with some meta data
@@ -145,7 +144,7 @@ func NewResponse(req *Request) (res *Response, err error) {
 	}
 	// if all backends are down, send an error instead of an empty result
 	if res.Request.OutputFormat != "wrapped_json" && len(res.Failed) > 0 && len(res.Failed) == len(req.Backends) {
-		res.Code = 400
+		res.Code = 502
 		err = &PeerError{msg: res.Failed[req.Backends[0]], kind: ConnectionError}
 		return
 	}
@@ -312,8 +311,8 @@ func (res *Response) PostProcessing() {
 	}
 
 	// apply request limit
-	if res.Request.Limit > 0 && res.Request.Limit < len(res.Result) {
-		res.Result = res.Result[0:res.Request.Limit]
+	if res.Request.Limit != nil && *res.Request.Limit >= 0 && *res.Request.Limit < len(res.Result) {
+		res.Result = res.Result[0:*res.Request.Limit]
 	}
 
 	// final calculation of stats querys

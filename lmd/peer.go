@@ -211,11 +211,10 @@ func NewPeer(LocalConfig *Config, config *Connection, waitGroup *sync.WaitGroup,
 	p.Status["LastColumns"] = []string{}
 	p.Status["LastTotalCount"] = int64(0)
 	p.Status["ThrukVersion"] = float64(0)
-	p.Status["SubKey"] = ""
-	p.Status["SubName"] = ""
-	p.Status["SubAddr"] = ""
-	p.Status["SubType"] = ""
-	p.Status["SubThrukUrl"] = ""
+	p.Status["SubKey"] = []string{}
+	p.Status["SubName"] = []string{}
+	p.Status["SubAddr"] = []string{}
+	p.Status["SubType"] = []string{}
 
 	/* initialize http client if there are any http(s) connections */
 	hasHTTP := false
@@ -578,21 +577,17 @@ func (p *Peer) periodicUpdateMultiBackends(ok *bool, force bool) {
 			subPeer = NewPeer(p.LocalConfig, &c, p.waitGroup, p.shutdownChannel)
 			subPeer.ParentID = p.ID
 			subPeer.Flags |= HTTPSub
-			subPeer.StatusSet("PeerParent", p.ID)
-			PeerMap[subID] = subPeer
-			PeerMapOrder = append(PeerMapOrder, c.ID)
+			subPeer.Status["PeerParent"] = p.ID
 			section := site["section"].(string)
 			section = strings.TrimPrefix(section, "Default")
 			section = strings.TrimPrefix(section, "/")
-			subPeer.StatusSet("Section", section)
-			subPeer.StatusSet("SubKey", site["id"].(string))
-			subPeer.StatusSet("SubName", site["name"].(string))
-			subPeer.StatusSet("SubAddr", site["addr"].(string))
-			subPeer.StatusSet("SubType", site["type"].(string))
-			if v, ok := site["federation_thruk_url"]; ok && v != nil {
-				subPeer.StatusSet("SubThrukUrl", v.(string))
-			}
-
+			subPeer.Status["Section"] = section
+			subPeer.setFederationInfo(site, "SubKey", "key")
+			subPeer.setFederationInfo(site, "SubName", "name")
+			subPeer.setFederationInfo(site, "SubAddr", "addr")
+			subPeer.setFederationInfo(site, "SubType", "type")
+			PeerMap[subID] = subPeer
+			PeerMapOrder = append(PeerMapOrder, c.ID)
 			nodeAccessor.assignedBackends = append(nodeAccessor.assignedBackends, subID)
 			subPeer.Start()
 		}
@@ -1139,6 +1134,11 @@ func (p *Peer) UpdateDeltaCommentsOrDowntimes(name string) (err error) {
 		}
 		p.DataLock.Lock()
 		data := p.Tables[table.Name]
+		if data.Index == nil {
+			// should not happen but might indicate a recent restart or backend issue
+			p.DataLock.Unlock()
+			return
+		}
 		for i := range res {
 			resRow := res[i]
 			id := fmt.Sprintf("%v", resRow[fieldIndex])
@@ -1146,6 +1146,7 @@ func (p *Peer) UpdateDeltaCommentsOrDowntimes(name string) (err error) {
 		}
 		err = p.updateReferences(table, &res)
 		if err != nil {
+			p.DataLock.Unlock()
 			return
 		}
 		p.Tables[table.Name] = data
@@ -2122,31 +2123,25 @@ func (p *Peer) GetVirtRowComputedValue(col *ResultColumn, row *[]interface{}, ro
 		if _, ok := p.Status["SubAddr"]; ok {
 			value = p.Status["SubAddr"]
 		} else {
-			value = ""
+			value = []string{}
 		}
 	case "federation_type":
 		if _, ok := p.Status["SubType"]; ok {
 			value = p.Status["SubType"]
 		} else {
-			value = ""
+			value = []string{}
 		}
 	case "federation_name":
 		if _, ok := p.Status["SubName"]; ok {
 			value = p.Status["SubName"]
 		} else {
-			value = ""
+			value = []string{}
 		}
 	case "federation_key":
 		if _, ok := p.Status["SubKey"]; ok {
 			value = p.Status["SubKey"]
 		} else {
-			value = ""
-		}
-	case "federation_thruk_url":
-		if _, ok := p.Status["SubType"]; ok {
-			value = p.Status["SubType"]
-		} else {
-			value = ""
+			value = []string{}
 		}
 	default:
 		log.Panicf("cannot handle virtual column: %s", col.Name)
@@ -2193,7 +2188,7 @@ func (p *Peer) WaitCondition(req *Request) bool {
 	c := make(chan struct{})
 	go func() {
 		// make sure we log panics properly
-		defer logPanicExit()
+		defer logPanicExitPeer(p)
 
 		p.DataLock.RLock()
 		table := p.Tables[req.Table].Table
@@ -2485,10 +2480,10 @@ func SpinUpPeers(peers []string) {
 		waitgroup.Add(1)
 		go func(peer *Peer, wg *sync.WaitGroup) {
 			// make sure we log panics properly
-			defer logPanicExit()
-
+			defer logPanicExitPeer(peer)
 			defer wg.Done()
-			p.StatusSet("Idling", false)
+
+			peer.StatusSet("Idling", false)
 			log.Infof("[%s] switched back to normal update interval", peer.Name)
 			if peer.StatusGet("PeerStatus").(PeerStatus) == PeerStatusUp {
 				log.Debugf("[%s] spin up update", peer.Name)
@@ -2520,6 +2515,14 @@ func (p *Peer) BuildLocalResponseData(res *Response, indexes *[]int) (int, *[][]
 	defer p.DataLock.RUnlock()
 	data := p.Tables[req.Table].Data
 	table := p.Tables[req.Table].Table
+
+	// peer might have gone down meanwhile, ex. after waiting for a waittrigger, so check again
+	if table == nil || !p.isOnline() {
+		res.Lock.Lock()
+		res.Failed[p.ID] = p.getError()
+		res.Lock.Unlock()
+		return 0, nil, nil
+	}
 
 	// get data for special tables
 	if table.Name == "tables" || table.Name == "columns" {
@@ -2588,7 +2591,7 @@ Rows:
 		found++
 		// check if we have enough result rows already
 		// we still need to count how many result we would have...
-		if limit > 0 && found > limit {
+		if limit >= 0 && found > limit {
 			continue Rows
 		}
 
@@ -2703,11 +2706,13 @@ func createLocalStatsCopy(stats *[]*Filter) []*Filter {
 	return localStats
 }
 func optimizeResultLimit(req *Request, table *Table) (limit int) {
-	if req.Limit > 0 && table.IsDefaultSortOrder(&req.Sort) {
-		limit = req.Limit
+	if req.Limit != nil && table.IsDefaultSortOrder(&req.Sort) {
+		limit = *req.Limit
 		if req.Offset > 0 {
 			limit += req.Offset
 		}
+	} else {
+		limit = -1
 	}
 	return
 }
@@ -2800,6 +2805,7 @@ func (p *Peer) setBroken(details string) {
 func logPanicExitPeer(p *Peer) {
 	if r := recover(); r != nil {
 		log.Errorf("[%s] Panic: %s", p.Name, r)
+		log.Errorf("[%s] Version: %s", p.Name, Version())
 		log.Errorf("[%s] %s", p.Name, debug.Stack())
 		if p.lastRequest != nil {
 			log.Errorf("[%s] LastQuery:", p.Name)
@@ -3022,4 +3028,23 @@ func (p *Peer) SendCommands(commands []string) (err error) {
 	p.ScheduleImmediateUpdate()
 
 	return
+}
+
+// setFederationInfo updates federation information for /site request
+func (p *Peer) setFederationInfo(data map[string]interface{}, statuskey, datakey string) {
+	if _, ok := data["federation_"+datakey]; ok {
+		if v, ok := data["federation_"+datakey].([]interface{}); ok {
+			list := []string{}
+			for _, d := range v {
+				list = append(list, d.(string))
+			}
+			p.Status[statuskey] = list
+			return
+		}
+	}
+	if v, ok := data[datakey].(string); ok {
+		p.Status[statuskey] = []string{v}
+		return
+	}
+	p.Status[statuskey] = []string{}
 }
