@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"reflect"
 	"regexp"
 	"runtime/debug"
 	"strconv"
@@ -2568,6 +2569,87 @@ func (p *Peer) getError() string {
 	return fmt.Sprintf("%v", p.StatusGet("LastError"))
 }
 
+func (p *Peer) checkAuth(req *Request, table *Table, row *[]interface{}) (canView bool) {
+	canView = true
+	// AuthUser is only valid for the below tables:
+	tablesMap := map[string]struct{}{
+		"hosts":               {},
+		"services":            {},
+		"hostgroups":          {},
+		"servicegroups":       {},
+		"log":                 {},
+		"downtimes":           {},
+		"comments":            {},
+		"hostsbygroup":        {},
+		"servicesbygroup":     {},
+		"servicesbyhostgroup": {},
+	}
+	// check if this is a valid table and AuthUser is set
+	if _, ok := tablesMap[table.Name]; ok && req.AuthUser != "" {
+		canView = false
+		var contacts reflect.Value
+		if table.Name == "hosts" || table.Name == "services" {
+			// Get the contacts directly from the row and check any contacts matches the AuthUser
+			contactsIndex := table.ColumnsIndex["contacts"]
+			contacts = reflect.ValueOf((*row)[contactsIndex])
+			// For services we also need to get the contacts of the host directly
+			if table.Name == "services" {
+				hostNameIndex := table.ColumnsIndex["host_name"]
+				hostName := (*row)[hostNameIndex].(string)
+				host := p.Tables["hosts"].Index[hostName]
+				ColumnsIndex := p.Tables["hosts"].Table.GetColumn("contacts").Index
+				contacts = reflect.AppendSlice(contacts, reflect.ValueOf(host[ColumnsIndex]))
+			}
+		} else if table.Name == "hostgroups" {
+			// get services/host of the group
+			membersIndex := table.ColumnsIndex["members"]
+			members := reflect.ValueOf((*row)[membersIndex])
+			// Check if any of the members has a contact that matches the AuthUser
+			for i := 0; i < members.Len(); i++ {
+				member := members.Index(i).Interface().(string)
+				host := p.Tables["hosts"].Index[member]
+				ColumnsIndex := p.Tables["hosts"].Table.GetColumn("contacts").Index
+				if contacts.IsValid() {
+					contacts = reflect.AppendSlice(contacts, reflect.ValueOf(host[ColumnsIndex]))
+				} else {
+					contacts = reflect.ValueOf(host[ColumnsIndex])
+				}
+			}
+		} else if table.Name == "downtimes" || table.Name == "comments" {
+			hostIndex := table.ColumnsIndex["host_name"]
+			serviceIndex := table.ColumnsIndex["service_description"]
+			hostName := (*row)[hostIndex].(string)
+			serviceDescription := (*row)[serviceIndex].(string)
+			if serviceDescription != "" {
+				var serviceID strings.Builder
+				serviceID.WriteString(hostName)
+				serviceID.WriteString(";")
+				serviceID.WriteString(serviceDescription)
+				service := p.Tables["services"].Index[serviceID.String()]
+				ColumnsIndex := p.Tables["services"].Table.GetColumn("contacts").Index
+				contacts = reflect.ValueOf(service[ColumnsIndex])
+			}
+			// for both hosts and services we need to get the host contacts
+			host := p.Tables["hosts"].Index[hostName]
+			ColumnsIndex := p.Tables["hosts"].Table.GetColumn("contacts").Index
+			if serviceDescription != "" {
+				contacts = reflect.AppendSlice(contacts, reflect.ValueOf(host[ColumnsIndex]))
+			} else {
+				contacts = reflect.ValueOf(host[ColumnsIndex])
+			}
+		}
+		if contacts.IsValid() {
+			for i := 0; i < contacts.Len(); i++ {
+				if contacts.Index(i).Interface().(string) == req.AuthUser {
+					canView = true
+					return
+				}
+			}
+		}
+	}
+	return
+}
+
 func (p *Peer) gatherResultRows(res *Response, table *Table, data *[][]interface{}, numPerRow int, indexes *[]int) (int, *[][]interface{}) {
 	req := res.Request
 	columns := p.Tables[req.Table].ColumnsMap
@@ -2588,6 +2670,11 @@ Rows:
 				continue Rows
 			}
 		}
+
+		if !p.checkAuth(req, table, row) {
+			continue Rows
+		}
+
 		found++
 		// check if we have enough result rows already
 		// we still need to count how many result we would have...
@@ -2645,6 +2732,10 @@ Rows:
 			if !p.MatchRowFilter(table, &refs, f, row, j) {
 				continue Rows
 			}
+		}
+
+		if !p.checkAuth(req, table, row) {
+			continue Rows
 		}
 
 		key := ""
