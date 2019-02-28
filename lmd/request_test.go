@@ -149,7 +149,7 @@ func TestRequestListFilter(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := assertEq("testhost_1", res[0][0]); err != nil {
+	if err := assertEq("testhost_10", res[0][0]); err != nil {
 		t.Fatal(err)
 	}
 
@@ -302,16 +302,16 @@ func TestRequestStats(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err = assertEq(9.6262454988, res[0][0]); err != nil {
+	if err = assertEq(5.6597309112772, res[0][0]); err != nil {
 		t.Error(err)
 	}
-	if err = assertEq(0.24065613746999998, res[0][1]); err != nil {
+	if err = assertEq(0.14149327278193, res[0][1]); err != nil {
 		t.Error(err)
 	}
 	if err = assertEq(float64(1), res[0][2]); err != nil {
 		t.Error(err)
 	}
-	if err = assertEq(4.010726, res[0][3]); err != nil {
+	if err = assertEq(4.031151, res[0][3]); err != nil {
 		t.Error(err)
 	}
 	if err = assertEq(float64(40), res[0][4]); err != nil {
@@ -341,7 +341,7 @@ func TestRequestStatsGroupBy(t *testing.T) {
 	if err = assertEq("testhost_1", res[0][0]); err != nil {
 		t.Error(err)
 	}
-	if err = assertEq(0.24065613747, res[1][1]); err != nil {
+	if err = assertEq(0.049920082092, res[1][1]); err != nil {
 		t.Error(err)
 	}
 
@@ -355,10 +355,10 @@ func TestRequestStatsGroupBy(t *testing.T) {
 	if err = assertEq("testhost_1", res[0][0]); err != nil {
 		t.Error(err)
 	}
-	if err = assertEq("tomcat", res[1][1]); err != nil {
+	if err = assertEq("test host 5", res[1][1]); err != nil {
 		t.Error(err)
 	}
-	if err = assertEq(0.24065613747, res[1][2]); err != nil {
+	if err = assertEq(0.049920082092, res[1][2]); err != nil {
 		t.Error(err)
 	}
 
@@ -444,7 +444,7 @@ func TestRequestBrokenColumns(t *testing.T) {
 	if err = assertEq("testhost_1", res[0][0]); err != nil {
 		t.Error(err)
 	}
-	if err = assertEq("tomcat", res[0][1]); err != nil {
+	if err = assertEq("Business Process: Test Business Process", res[0][1]); err != nil {
 		t.Error(err)
 	}
 
@@ -461,13 +461,13 @@ func TestRequestGroupByTable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = assertEq(10, len(res)); err != nil {
+	if err = assertEq(17, len(res)); err != nil {
 		t.Fatal(err)
 	}
 	if err = assertEq("testhost_1", res[0][0]); err != nil {
 		t.Error(err)
 	}
-	if err = assertEq("127.0.0.2", res[0][5]); err != nil {
+	if err = assertEq("Business Process", res[0][5]); err != nil {
 		t.Error(err)
 	}
 
@@ -525,7 +525,7 @@ func TestRequestSort(t *testing.T) {
 	if err = assertEq(5, len(res)); err != nil {
 		t.Error(err)
 	}
-	if err = assertEq("testhost_4", res[0][0]); err != nil {
+	if err = assertEq("testhost_1", res[0][0]); err != nil {
 		t.Error(err)
 	}
 
