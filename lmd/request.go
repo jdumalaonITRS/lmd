@@ -54,6 +54,12 @@ const (
 	Desc
 )
 
+// outputformat types
+const (
+	// WRAPPEDJSON is json data along with meta data
+	WRAPPEDJSON = "wrapped_json"
+)
+
 // String converts a SortDirection back to the original string.
 func (s *SortDirection) String() string {
 	switch *s {
@@ -164,6 +170,9 @@ func (req *Request) String() (str string) {
 	}
 	if req.SendColumnsHeader {
 		str += fmt.Sprintf("ColumnHeaders: on\n")
+	}
+	if req.KeepAlive {
+		str += fmt.Sprintf("KeepAlive: on\n")
 	}
 	for _, f := range req.Filter {
 		str += f.String("")
@@ -520,7 +529,7 @@ func (req *Request) buildDistributedRequestData(subBackends []string) (requestDa
 	}
 
 	// Get hash with metadata in addition to table rows
-	requestData["outputformat"] = "wrapped_json"
+	requestData["outputformat"] = WRAPPEDJSON
 
 	return
 }
@@ -738,7 +747,7 @@ func parseStatsOp(op string, value string, line *string, table string, stats *[]
 
 func parseOutputFormat(field *string, value string) (err error) {
 	switch value {
-	case "wrapped_json":
+	case WRAPPEDJSON:
 		*field = value
 	case "json":
 		*field = value

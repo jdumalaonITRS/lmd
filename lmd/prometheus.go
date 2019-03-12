@@ -71,6 +71,15 @@ var (
 		},
 		[]string{"peer"},
 	)
+	promPeerQueries = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: NAME,
+			Subsystem: "peer",
+			Name:      "backend_queries",
+			Help:      "Peer Backend Query Counter",
+		},
+		[]string{"peer"},
+	)
 	promPeerBytesSend = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Namespace: NAME,
@@ -146,9 +155,9 @@ var (
 	)
 )
 
-func initPrometheus(LocalConfig *Config) (prometheusListener *net.Listener) {
-	if LocalConfig.ListenPrometheus != "" {
-		l, err := net.Listen("tcp", LocalConfig.ListenPrometheus)
+func initPrometheus(localConfig *Config) (prometheusListener *net.Listener) {
+	if localConfig.ListenPrometheus != "" {
+		l, err := net.Listen("tcp", localConfig.ListenPrometheus)
 		prometheusListener = &l
 		go func() {
 			// make sure we log panics properly
@@ -161,7 +170,7 @@ func initPrometheus(LocalConfig *Config) (prometheusListener *net.Listener) {
 			mux.Handle("/metrics", promhttp.Handler())
 			http.Serve(l, mux)
 		}()
-		log.Infof("serving prometheus metrics at %s/metrics", LocalConfig.ListenPrometheus)
+		log.Infof("serving prometheus metrics at %s/metrics", localConfig.ListenPrometheus)
 	}
 	prometheus.Register(promInfoCount)
 	prometheus.Register(promFrontendConnections)
@@ -170,6 +179,7 @@ func initPrometheus(LocalConfig *Config) (prometheusListener *net.Listener) {
 	prometheus.Register(promPeerUpdateInterval)
 	prometheus.Register(promPeerConnections)
 	prometheus.Register(promPeerFailedConnections)
+	prometheus.Register(promPeerQueries)
 	prometheus.Register(promPeerBytesSend)
 	prometheus.Register(promPeerBytesReceived)
 	prometheus.Register(promPeerUpdates)
