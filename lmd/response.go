@@ -35,7 +35,7 @@ var VirtKeyMap = map[string]VirtKeyMapTupel{
 	"key":                     {Index: -1, Key: "PeerKey", Type: StringCol},
 	"name":                    {Index: -2, Key: "PeerName", Type: StringCol},
 	"addr":                    {Index: -4, Key: "PeerAddr", Type: StringCol},
-	"status":                  {Index: -5, Key: "PeerStatus", Type: IntCol},
+	STATUS:                    {Index: -5, Key: "PeerStatus", Type: IntCol},
 	"bytes_send":              {Index: -6, Key: "BytesSend", Type: IntCol},
 	"bytes_received":          {Index: -7, Key: "BytesReceived", Type: IntCol},
 	"queries":                 {Index: -8, Key: "Querys", Type: IntCol},
@@ -57,7 +57,9 @@ var VirtKeyMap = map[string]VirtKeyMapTupel{
 	"federation_name":         {Index: -24, Key: "", Type: StringListCol},
 	"federation_addr":         {Index: -25, Key: "", Type: StringListCol},
 	"federation_type":         {Index: -26, Key: "", Type: StringListCol},
-	"empty":                   {Index: -27, Key: "", Type: StringCol},
+	"services_with_state":     {Index: -27, Key: "", Type: StringListCol},
+	"services_with_info":      {Index: -28, Key: "", Type: StringListCol},
+	EMPTY:                     {Index: -29, Key: "", Type: StringCol},
 }
 
 // Response contains the livestatus response data as long with some meta data
@@ -137,7 +139,7 @@ func NewResponse(req *Request) (res *Response, err error) {
 		res.BuildLocalResponse(selectedPeers, &indexes)
 	}
 	// if all backends are down, send an error instead of an empty result
-	if res.Request.OutputFormat != "wrapped_json" && len(res.Failed) > 0 && len(res.Failed) == len(req.Backends) {
+	if res.Request.OutputFormat != WRAPPEDJSON && len(res.Failed) > 0 && len(res.Failed) == len(req.Backends) {
 		res.Code = 502
 		err = &PeerError{msg: res.Failed[req.Backends[0]], kind: ConnectionError}
 		return
@@ -401,7 +403,7 @@ func (req *Request) BuildResponseIndexes(table *Table) (indexes []int, columns [
 	if len(req.Columns) == 0 && len(req.Stats) == 0 {
 		req.SendColumnsHeader = true
 		for _, col := range table.Columns {
-			if col.Update != RefUpdate && col.Name != "empty" {
+			if col.Update != RefUpdate && col.Name != EMPTY {
 				req.Columns = append(req.Columns, col.Name)
 			}
 		}
@@ -439,7 +441,7 @@ func addBuildResponseIndexColumn(table *Table, colName string, requestIndex int,
 			return indexes, columns
 		}
 		if !fixBrokenClientsRequestColumn(&colName, table.Name) {
-			colName = "empty"
+			colName = EMPTY
 		}
 		i = table.ColumnsIndex[colName]
 	}
@@ -498,7 +500,7 @@ func (res *Response) Bytes() ([]byte, error) {
 		return []byte(res.Error.Error()), nil
 	}
 
-	if res.Request.OutputFormat == "wrapped_json" {
+	if res.Request.OutputFormat == WRAPPEDJSON {
 		return res.WrappedJSON()
 	}
 	return res.JSON()
@@ -642,7 +644,7 @@ func (res *Response) BuildLocalResponse(peers []string, indexes *[]int) {
 			continue
 		}
 
-		if table.Name == "status" {
+		if table.Name == STATUS {
 			// append results serially for simple calculations
 			// no need to create goroutines for simple status queries
 			res.AppendPeerResult(p, indexes)
@@ -773,7 +775,8 @@ func (res *Response) PassThrougQuery(peer *Peer, table *Table, virtColumns []*Re
 	}
 	// insert virtual values, like peer_addr or name
 	if len(virtColumns) > 0 {
-		for rowNum, row := range result {
+		for rowNum := range result {
+			row := result[rowNum]
 			for _, col := range virtColumns {
 				i := col.Index
 				row = append(row, 0)
