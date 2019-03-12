@@ -2697,7 +2697,8 @@ func (p *Peer) checkAuth(req *Request, table *Table, row *[]interface{}) (canVie
 	if _, ok := tablesMap[table.Name]; ok && req.AuthUser != "" {
 		canView = false
 		var contacts reflect.Value
-		if table.Name == "hosts" || table.Name == "services" {
+		switch table.Name {
+		case "hosts", "services":
 			// Get the contacts directly from the row and check any contacts matches the AuthUser
 			contactsIndex := table.ColumnsIndex["contacts"]
 			contacts = reflect.ValueOf((*row)[contactsIndex])
@@ -2709,7 +2710,7 @@ func (p *Peer) checkAuth(req *Request, table *Table, row *[]interface{}) (canVie
 				ColumnsIndex := p.Tables["hosts"].Table.GetColumn("contacts").Index
 				contacts = reflect.AppendSlice(contacts, reflect.ValueOf(host[ColumnsIndex]))
 			}
-		} else if table.Name == "hostgroups" {
+		case "hostgroups":
 			// get services/host of the group
 			membersIndex := table.ColumnsIndex["members"]
 			members := reflect.ValueOf((*row)[membersIndex])
@@ -2724,7 +2725,7 @@ func (p *Peer) checkAuth(req *Request, table *Table, row *[]interface{}) (canVie
 					contacts = reflect.ValueOf(host[ColumnsIndex])
 				}
 			}
-		} else if table.Name == "downtimes" || table.Name == "comments" {
+		case "downtimes", "comments":
 			hostIndex := table.ColumnsIndex["host_name"]
 			serviceIndex := table.ColumnsIndex["service_description"]
 			hostName := (*row)[hostIndex].(string)
