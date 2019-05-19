@@ -65,6 +65,8 @@ cp op5build/lmd.service %{buildroot}%{_unitdir}/lmd.service
 %endif
 touch %buildroot%prefix/lmd/lmd.log
 cp -rf op5build/lmd.ini docs README.md Changes LICENSE %buildroot%prefix/lmd/
+mkdir -p %buildroot%_sysconfdir/logrotate.d
+cp op5build/lmd.logrotate %{buildroot}%_sysconfdir/logrotate.d/lmd
 
 %post
 sed -i -e "s/\/rw\/live$/\/rw\/live_tmp/g" /opt/monitor/etc/mconf/livestatus.cfg
@@ -103,6 +105,7 @@ fi
 %else
 %attr(664, root, root) %{_unitdir}/lmd.service
 %endif
+%attr(644, root, root) %_sysconfdir/logrotate.d/lmd
 
 %clean
 rm -rf %buildroot

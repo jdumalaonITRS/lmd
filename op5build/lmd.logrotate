@@ -1,0 +1,17 @@
+/opt/monitor/var/lmd/lmd.log {
+    weekly
+    rotate 10
+    compress
+    dateext
+    dateformat -%Y%m%d
+    missingok
+    notifempty
+    postrotate
+        if command -v systemctl &>/dev/null; then
+            systemctl try-restart lmd > /dev/null 2>&1
+        else
+            /sbin/service lmd condrestart 2> /dev/null > /dev/null || true
+        fi
+    endscript
+    create 0664 root root
+}
