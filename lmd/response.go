@@ -123,6 +123,8 @@ func (res *Response) Less(i, j int) bool {
 		switch sortType {
 		case IntCol:
 			fallthrough
+		case Int64Col:
+			fallthrough
 		case FloatCol:
 			valueA := res.Result[i][s.Index].(float64)
 			valueB := res.Result[j][s.Index].(float64)
@@ -164,7 +166,7 @@ func (res *Response) Less(i, j int) bool {
 			}
 			return s1 > s2
 		}
-		panic(fmt.Sprintf("sorting not implemented for type %d", sortType))
+		panic(fmt.Sprintf("sorting not implemented for type %s", sortType))
 	}
 	return true
 }
@@ -376,7 +378,7 @@ func (res *Response) JSON(buf io.Writer) error {
 	sendColumnsHeader := res.SendColumnsHeader()
 	if sendColumnsHeader {
 		res.WriteColumnsResponse(json)
-		if (res.Result != nil && len(res.Result) > 0) || len(res.RawResults.DataResult) > 0 {
+		if (res.Result != nil && len(res.Result) > 0) || (res.RawResults != nil && len(res.RawResults.DataResult) > 0) {
 			json.WriteRaw(",")
 		}
 	}
@@ -474,22 +476,18 @@ func (res *Response) BuildLocalResponse(peers []*Peer) {
 	waitgroup := &sync.WaitGroup{}
 	for i := range peers {
 		p := peers[i]
-		p.DataLock.RLock()
-		store := p.Tables[res.Request.Table]
-		p.DataLock.RUnlock()
-
 		p.StatusSet("LastQuery", time.Now().Unix())
-
-		if store == nil || (!p.isOnline() && store.Table.Virtual == nil) {
+		store, err := p.GetDataStore(res.Request.Table)
+		if err != nil {
 			res.Lock.Lock()
-			res.Failed[p.ID] = p.getError()
+			res.Failed[p.ID] = err.Error()
 			res.Lock.Unlock()
 			continue
 		}
 
 		// process virtual tables serially without go routines to maintain the correct order, ex.: from the sites table
 		if store.Table.Virtual != nil {
-			p.BuildLocalResponseData(res, resultcollector)
+			p.BuildLocalResponseData(res, store, resultcollector)
 			continue
 		}
 
@@ -501,7 +499,7 @@ func (res *Response) BuildLocalResponse(peers []*Peer) {
 			log.Tracef("[%s] starting local data computation", peer.Name)
 			defer wg.Done()
 
-			peer.BuildLocalResponseData(res, resultcollector)
+			peer.BuildLocalResponseData(res, store, resultcollector)
 		}(p, waitgroup)
 	}
 	log.Tracef("waiting...")

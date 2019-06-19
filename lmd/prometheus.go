@@ -27,6 +27,15 @@ var (
 		},
 		[]string{"listen"},
 	)
+	promFrontendQueries = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: NAME,
+			Subsystem: "frontend",
+			Name:      "queries",
+			Help:      "Listener Query Counter",
+		},
+		[]string{"listen"},
+	)
 	promFrontendBytesSend = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Namespace: NAME,
@@ -136,24 +145,29 @@ var (
 		[]string{"peer"},
 	)
 
-	promHostCount = prometheus.NewGaugeVec(
+	promObjectCount = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Namespace: NAME,
 			Subsystem: "peer",
-			Name:      "host_num",
-			Help:      "Number of hosts",
+			Name:      "object_count",
+			Help:      "Number of objects",
 		},
-		[]string{"peer"},
+		[]string{"peer", "type"},
 	)
-	promServiceCount = prometheus.NewGaugeVec(
+
+	promStringDedupCount = prometheus.NewGauge(
 		prometheus.GaugeOpts{
 			Namespace: NAME,
-			Subsystem: "peer",
-			Name:      "service_num",
-			Help:      "Number of services",
-		},
-		[]string{"peer"},
-	)
+			Name:      "string_dedup_count",
+			Help:      "total number of deduplicated strings",
+		})
+
+	promStringDedupBytes = prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Namespace: NAME,
+			Name:      "string_dedup_bytes",
+			Help:      "total bytes of all deduplicated strings",
+		})
 )
 
 func initPrometheus(localConfig *Config) (prometheusListener io.Closer) {
@@ -175,6 +189,7 @@ func initPrometheus(localConfig *Config) (prometheusListener io.Closer) {
 	}
 	prometheus.Register(promInfoCount)
 	prometheus.Register(promFrontendConnections)
+	prometheus.Register(promFrontendQueries)
 	prometheus.Register(promFrontendBytesSend)
 	prometheus.Register(promFrontendBytesReceived)
 	prometheus.Register(promPeerUpdateInterval)
@@ -187,8 +202,9 @@ func initPrometheus(localConfig *Config) (prometheusListener io.Closer) {
 	prometheus.Register(promPeerUpdateDuration)
 	prometheus.Register(promPeerUpdatedHosts)
 	prometheus.Register(promPeerUpdatedServices)
-	prometheus.Register(promHostCount)
-	prometheus.Register(promServiceCount)
+	prometheus.Register(promObjectCount)
+	prometheus.Register(promStringDedupCount)
+	prometheus.Register(promStringDedupBytes)
 
 	promInfoCount.WithLabelValues(VERSION).Set(1)
 

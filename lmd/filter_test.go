@@ -13,14 +13,16 @@ func TestStringFilter(t *testing.T) {
 }
 
 func TestStringListFilter(t *testing.T) {
-	value := []string{"abc", "def"}
+	a := "abc"
+	b := "def"
+	value := []*string{&a, &b}
 	if err := assertEq(true, (&Filter{Operator: GreaterThan, StrValue: "def"}).MatchStringList(&value)); err != nil {
 		t.Error(err)
 	}
 }
 
 func TestIntListFilter(t *testing.T) {
-	value := []int64{1, 2, 3, 4, 5}
+	value := []int{1, 2, 3, 4, 5}
 	if err := assertEq(true, (&Filter{Operator: GreaterThan, FloatValue: 5}).MatchIntList(value)); err != nil {
 		t.Error(err)
 	}

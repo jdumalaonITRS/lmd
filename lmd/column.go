@@ -53,11 +53,15 @@ var VirtColumnList = []VirtColumnMapEntry{
 	{Name: "comments_with_info", ResolvFunc: VirtColComments},
 	{Name: "downtimes", ResolvFunc: VirtColDowntimes},
 	{Name: "members_with_state", ResolvFunc: VirtColMembersWithState},
+	{Name: "custom_variables", ResolvFunc: VirtColCustomVariables},
 	{Name: "empty", ResolvFunc: func(_ *DataRow, _ *Column) interface{} { return "" }}, // return empty string as placeholder for nonexisting columns
 }
 
 // VirtColumnMap maps is the lookup map for the VirtColumnList
 var VirtColumnMap = map[string]*VirtColumnMapEntry{}
+
+// ServiceMember is a host_name / description pair
+type ServiceMember [2]*string
 
 // FetchType defines if and how the column is updated.
 //go:generate stringer -type=FetchType
@@ -74,7 +78,7 @@ const (
 
 // DataType defines the data type of a column.
 //go:generate stringer -type=DataType
-type DataType uint8
+type DataType uint16
 
 const (
 	// StringCol is used for string columns.
@@ -85,12 +89,16 @@ const (
 	IntCol
 	// IntListCol is used for integer list columns.
 	IntListCol
+	// Int64Col is used for large integer columns.
+	Int64Col
 	// FloatCol is used for float columns.
 	FloatCol
 	// HashMapCol is used for generic hash map columns.
 	HashMapCol
 	// CustomVarCol is a list of custom variables
 	CustomVarCol
+	// ServiceMemberListCol is a list of host_name/servicename pairs
+	ServiceMemberListCol
 	// InterfaceListCol is a list of arbitrary data
 	InterfaceListCol
 )
@@ -140,28 +148,37 @@ const (
 	Naemon1_0_10
 )
 
+var OptionalFlagsStrings = map[OptionalFlags]string{
+	LMD:          "LMD",
+	MultiBackend: "MultiBackend",
+	LMDSub:       "LMDSub",
+	HTTPSub:      "HTTPSub",
+	Shinken:      "Shinken",
+	Icinga2:      "Icinga2",
+	Naemon:       "Naemon",
+	Naemon1_0_10: "Naemon1_0_10",
+}
+
 // String returns the string representation of used flags
 func (f *OptionalFlags) String() string {
 	if *f == NoFlags {
 		return "<none>"
 	}
-	flags := map[OptionalFlags]string{
-		LMD:          "LMD",
-		MultiBackend: "MultiBackend",
-		LMDSub:       "LMDSub",
-		HTTPSub:      "HTTPSub",
-		Shinken:      "Shinken",
-		Icinga2:      "Icinga2",
-		Naemon:       "Naemon",
-		Naemon1_0_10: "Naemon1_0_10",
+	return (strings.Join(f.List(), ", "))
+}
+
+// List returns a string list of used flags
+func (f *OptionalFlags) List() (list []string) {
+	list = make([]string, 0)
+	if *f == NoFlags {
+		return
 	}
-	str := []string{}
-	for fl, name := range flags {
+	for fl, name := range OptionalFlagsStrings {
 		if f.HasFlag(fl) {
-			str = append(str, name)
+			list = append(list, name)
 		}
 	}
-	return (strings.Join(str, ", "))
+	return
 }
 
 // HasFlag returns true if flags are present
@@ -244,14 +261,18 @@ func (c *Column) GetEmptyValue() interface{} {
 		return ""
 	case IntCol:
 		fallthrough
+	case Int64Col:
+		fallthrough
 	case FloatCol:
 		return -1
 	case IntListCol:
 		fallthrough
 	case StringListCol:
 		return (make([]interface{}, 0))
-	case HashMapCol:
+	case HashMapCol, CustomVarCol:
 		return (make(map[string]string))
+	case ServiceMemberListCol:
+		fallthrough
 	case InterfaceListCol:
 		return (make([]interface{}, 0))
 	default:

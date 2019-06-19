@@ -63,6 +63,8 @@ func (raw *RawResultSet) Less(i, j int) bool {
 		switch s.Column.DataType {
 		case IntCol:
 			fallthrough
+		case Int64Col:
+			fallthrough
 		case FloatCol:
 			valueA := raw.DataResult[i].GetFloat(s.Column)
 			valueB := raw.DataResult[j].GetFloat(s.Column)
@@ -84,15 +86,15 @@ func (raw *RawResultSet) Less(i, j int) bool {
 			}
 			return *s1 > *s2
 		case StringListCol:
-			s1 := strings.Join(*raw.DataResult[i].GetStringList(s.Column), ";")
-			s2 := strings.Join(*raw.DataResult[j].GetStringList(s.Column), ";")
-			if s1 == s2 {
+			s1 := joinStringlist(raw.DataResult[i].GetStringList(s.Column), ";")
+			s2 := joinStringlist(raw.DataResult[j].GetStringList(s.Column), ";")
+			if *s1 == *s2 {
 				continue
 			}
 			if s.Direction == Asc {
-				return s1 < s2
+				return *s1 < *s2
 			}
-			return s1 > s2
+			return *s1 > *s2
 		case IntListCol:
 			// join numbers to string
 			s1 := strings.Join(strings.Fields(fmt.Sprint(raw.DataResult[i].GetIntList(s.Column))), ";")
@@ -114,8 +116,38 @@ func (raw *RawResultSet) Less(i, j int) bool {
 				return s1 < s2
 			}
 			return s1 > s2
+		case ServiceMemberListCol:
+			s1 := fmt.Sprintf("%v", raw.DataResult[i].GetServiceMemberList(s.Column))
+			s2 := fmt.Sprintf("%v", raw.DataResult[j].GetServiceMemberList(s.Column))
+			if s1 == s2 {
+				continue
+			}
+			if s.Direction == Asc {
+				return s1 < s2
+			}
+			return s1 > s2
+		case InterfaceListCol:
+			s1 := fmt.Sprintf("%v", raw.DataResult[i].GetInterfaceList(s.Column))
+			s2 := fmt.Sprintf("%v", raw.DataResult[j].GetInterfaceList(s.Column))
+			if s1 == s2 {
+				continue
+			}
+			if s.Direction == Asc {
+				return s1 < s2
+			}
+			return s1 > s2
+		case CustomVarCol:
+			s1 := fmt.Sprintf("%v", raw.DataResult[i].GetHashMap(s.Column))
+			s2 := fmt.Sprintf("%v", raw.DataResult[j].GetHashMap(s.Column))
+			if s1 == s2 {
+				continue
+			}
+			if s.Direction == Asc {
+				return s1 < s2
+			}
+			return s1 > s2
 		}
-		panic(fmt.Sprintf("sorting not implemented for type %d", s.Column.DataType))
+		panic(fmt.Sprintf("sorting not implemented for type %s", s.Column.DataType))
 	}
 	return true
 }
