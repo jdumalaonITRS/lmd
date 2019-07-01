@@ -176,7 +176,7 @@ func (f *Filter) strValue() string {
 		fallthrough
 	case InterfaceListCol:
 		fallthrough
-	case StringCol:
+	case StringCol, StringLargeCol:
 		value = f.StrValue
 	default:
 		log.Panicf("not implemented column type: %v", f.Column.DataType)
@@ -212,7 +212,7 @@ func (f *Filter) ApplyValue(val float64, count int) {
 
 // ParseFilter parses a single line into a filter object.
 // It returns any error encountered.
-func ParseFilter(value []byte, table string, stack *[]*Filter) (err error) {
+func ParseFilter(value []byte, table TableName, stack *[]*Filter) (err error) {
 	tmp := bytes.SplitN(value, []byte(" "), 3)
 	if len(tmp) < 2 {
 		err = errors.New("filter header must be Filter: <field> <operator> <value>")
@@ -304,7 +304,7 @@ func (f *Filter) setFilterValue(strVal string) (err error) {
 		fallthrough
 	case ServiceMemberListCol:
 		fallthrough
-	case StringCol:
+	case StringCol, StringLargeCol:
 		f.StrValue = strVal
 		return
 	}
@@ -365,7 +365,7 @@ func parseFilterOp(in []byte) (op Operator, isRegex bool, err error) {
 
 // ParseStats parses a text line into a stats object.
 // It returns any error encountered.
-func ParseStats(value []byte, table string, stack *[]*Filter) (err error) {
+func ParseStats(value []byte, table TableName, stack *[]*Filter) (err error) {
 	tmp := bytes.SplitN(value, []byte(" "), 2)
 	if len(tmp) < 2 {
 		err = fmt.Errorf("stats header, must be Stats: <field> <operator> <value> OR Stats: <sum|avg|min|max> <field>")
@@ -441,7 +441,7 @@ func ParseFilterOp(op GroupOperator, value []byte, stack *[]*Filter) (err error)
 func (f *Filter) Match(row *DataRow) bool {
 	colType := f.Column.DataType
 	switch colType {
-	case StringCol:
+	case StringCol, StringLargeCol:
 		return f.MatchString(row.GetString(f.Column))
 	case StringListCol:
 		return f.MatchStringList(row.GetStringList(f.Column))
@@ -583,7 +583,7 @@ func (f *Filter) MatchString(value *string) bool {
 	return false
 }
 
-func (f *Filter) MatchStringList(list *[]*string) bool {
+func (f *Filter) MatchStringList(list *[]string) bool {
 	switch f.Operator {
 	case Equal:
 		// used to match for empty lists, like: contacts = ""
@@ -595,14 +595,14 @@ func (f *Filter) MatchStringList(list *[]*string) bool {
 		return f.StrValue == "" && len(*list) != 0
 	case GreaterThan:
 		for i := range *list {
-			if f.StrValue == *((*list)[i]) {
+			if f.StrValue == (*list)[i] {
 				return true
 			}
 		}
 		return false
 	case GroupContainsNot:
 		for i := range *list {
-			if f.StrValue == *((*list)[i]) {
+			if f.StrValue == (*list)[i] {
 				return false
 			}
 		}
@@ -611,7 +611,7 @@ func (f *Filter) MatchStringList(list *[]*string) bool {
 		fallthrough
 	case RegexNoCaseMatch:
 		for i := range *list {
-			if f.MatchString((*list)[i]) {
+			if f.MatchString(&(*list)[i]) {
 				return true
 			}
 		}
@@ -620,7 +620,7 @@ func (f *Filter) MatchStringList(list *[]*string) bool {
 		fallthrough
 	case RegexNoCaseMatchNot:
 		for i := range *list {
-			if f.MatchString((*list)[i]) {
+			if f.MatchString(&(*list)[i]) {
 				return false
 			}
 		}
@@ -630,14 +630,14 @@ func (f *Filter) MatchStringList(list *[]*string) bool {
 	return false
 }
 
-func (f *Filter) MatchIntList(list []int) bool {
+func (f *Filter) MatchIntList(list []int32) bool {
 	switch f.Operator {
 	case Equal:
 		return f.IsEmpty && len(list) == 0
 	case Unequal:
 		return f.IsEmpty && len(list) != 0
 	case GreaterThan:
-		fVal := int(f.FloatValue)
+		fVal := int32(f.FloatValue)
 		for i := range list {
 			if fVal == list[i] {
 				return true
@@ -645,7 +645,7 @@ func (f *Filter) MatchIntList(list []int) bool {
 		}
 		return false
 	case GroupContainsNot:
-		fVal := int(f.FloatValue)
+		fVal := int32(f.FloatValue)
 		for i := range list {
 			if fVal == list[i] {
 				return false
@@ -667,19 +667,19 @@ func (f *Filter) MatchCustomVar(value map[string]string) bool {
 
 // some broken clients request <table>_column instead of just column
 // be nice to them as well...
-func fixBrokenClientsRequestColumn(columnName *string, table string) bool {
+func fixBrokenClientsRequestColumn(columnName *string, table TableName) bool {
 	fixedColumnName := *columnName
 
 	switch table {
-	case "hostsbygroup":
+	case TableHostsbygroup:
 		fixedColumnName = strings.TrimPrefix(fixedColumnName, "host_")
-	case "servicesbygroup", "servicesbyhostgroup":
+	case TableServicesbygroup, TableServicesbyhostgroup:
 		fixedColumnName = strings.TrimPrefix(fixedColumnName, "service_")
-	case "status":
+	case TableStatus:
 		fixedColumnName = strings.TrimPrefix(fixedColumnName, "status_")
 	default:
 		var tablePrefix strings.Builder
-		tablePrefix.WriteString(strings.TrimSuffix(table, "s"))
+		tablePrefix.WriteString(strings.TrimSuffix(table.String(), "s"))
 		tablePrefix.WriteString("_")
 		fixedColumnName = strings.TrimPrefix(fixedColumnName, tablePrefix.String())
 	}

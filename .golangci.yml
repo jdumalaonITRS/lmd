@@ -38,7 +38,9 @@ issues:
   exclude:
     - "TLS InsecureSkipVerify may be true"
     - "`noCopy` is unused"
+    - "can be `expvar.Var`"
     - "cyclomatic complexity .* of func `TestNodeManager` is high"
     - "cyclomatic complexity .* of func `.*ParseRequestHeaderLine` is high"
     - "cyclomatic complexity .* of func `.*Less` is high"
     - "cyclomatic complexity .* of func `matchStringListFilter` is high"
+    - "cyclomatic complexity .* of func `.*String` is high"

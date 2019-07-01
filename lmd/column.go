@@ -52,8 +52,10 @@ var VirtColumnList = []VirtColumnMapEntry{
 	{Name: "comments", ResolvFunc: VirtColComments},
 	{Name: "comments_with_info", ResolvFunc: VirtColComments},
 	{Name: "downtimes", ResolvFunc: VirtColDowntimes},
+	{Name: "downtimes_with_info", ResolvFunc: VirtColDowntimes},
 	{Name: "members_with_state", ResolvFunc: VirtColMembersWithState},
 	{Name: "custom_variables", ResolvFunc: VirtColCustomVariables},
+	{Name: "total_services", ResolvFunc: VirtColTotalServices},
 	{Name: "empty", ResolvFunc: func(_ *DataRow, _ *Column) interface{} { return "" }}, // return empty string as placeholder for nonexisting columns
 }
 
@@ -61,7 +63,7 @@ var VirtColumnList = []VirtColumnMapEntry{
 var VirtColumnMap = map[string]*VirtColumnMapEntry{}
 
 // ServiceMember is a host_name / description pair
-type ServiceMember [2]*string
+type ServiceMember [2]string
 
 // FetchType defines if and how the column is updated.
 //go:generate stringer -type=FetchType
@@ -101,6 +103,8 @@ const (
 	ServiceMemberListCol
 	// InterfaceListCol is a list of arbitrary data
 	InterfaceListCol
+	// StringLargeCol is used for large strings
+	StringLargeCol
 )
 
 // StorageType defines how this column is stored
@@ -257,24 +261,14 @@ func (c *Column) String() string {
 // GetEmptyValue returns an empty placeholder representation for the given column type
 func (c *Column) GetEmptyValue() interface{} {
 	switch c.DataType {
-	case StringCol:
+	case StringCol, StringLargeCol:
 		return ""
-	case IntCol:
-		fallthrough
-	case Int64Col:
-		fallthrough
-	case FloatCol:
+	case IntCol, Int64Col, FloatCol:
 		return -1
-	case IntListCol:
-		fallthrough
-	case StringListCol:
+	case IntListCol, StringListCol, ServiceMemberListCol, InterfaceListCol:
 		return (make([]interface{}, 0))
 	case HashMapCol, CustomVarCol:
 		return (make(map[string]string))
-	case ServiceMemberListCol:
-		fallthrough
-	case InterfaceListCol:
-		return (make([]interface{}, 0))
 	default:
 		log.Panicf("type %s not supported", c.DataType)
 	}

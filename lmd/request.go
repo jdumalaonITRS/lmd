@@ -22,7 +22,7 @@ import (
 // Request defines a livestatus request object.
 type Request struct {
 	noCopy              noCopy
-	Table               string
+	Table               TableName
 	Command             string
 	Columns             []string  // parsed columns field
 	RequestColumns      []*Column // calculated/expanded columns list
@@ -47,6 +47,7 @@ type Request struct {
 	WaitConditionNegate bool
 	KeepAlive           bool
 	AuthUser            string
+	Negate              bool
 }
 
 // SortDirection can be either Asc or Desc
@@ -184,7 +185,7 @@ func (req *Request) String() (str string) {
 		str = req.Command + "\n\n"
 		return
 	}
-	str = "GET " + req.Table + "\n"
+	str = "GET " + req.Table.String() + "\n"
 	if req.ResponseFixed16 {
 		str += "ResponseHeader: fixed16\n"
 	}
@@ -229,6 +230,9 @@ func (req *Request) String() (str string) {
 	}
 	if req.WaitConditionNegate {
 		str += fmt.Sprintf("WaitConditionNegate\n")
+	}
+	if req.Negate {
+		str += fmt.Sprintf("Negate:\n")
 	}
 	if req.AuthUser != "" {
 		str += fmt.Sprintf("AuthUser: %s\n", req.AuthUser)
@@ -309,11 +313,11 @@ func (req *Request) ParseRequestAction(firstLine *string) (valid bool, err error
 			return
 		}
 
-		req.Table = matched[1]
-		_, ok := Objects.Tables[req.Table]
-		if !ok {
-			err = fmt.Errorf("bad request: table %s does not exist", req.Table)
+		tableName, tErr := NewTableName(matched[1])
+		if tErr != nil {
+			err = fmt.Errorf("bad request: %s", tErr.Error())
 		}
+		req.Table = tableName
 		valid = true
 		return
 	}
@@ -499,8 +503,8 @@ func (req *Request) getSubBackends(allBackendsRequested bool, nodeBackends []str
 
 func (req *Request) buildDistributedRequestData(subBackends []string) (requestData map[string]interface{}) {
 	requestData = make(map[string]interface{})
-	if req.Table != "" {
-		requestData["table"] = req.Table
+	if req.Table != TableNone {
+		requestData["table"] = req.Table.String()
 	}
 
 	// avoid recursion
@@ -699,6 +703,12 @@ func (req *Request) ParseRequestHeaderLine(line []byte) (err error) {
 	case "waitconditionnegate":
 		req.WaitConditionNegate = true
 		return
+	case "negate":
+		if len(req.Filter) == 0 && req.FilterStr == "" {
+			err = fmt.Errorf("no Filter: header to negate")
+		}
+		req.Negate = true
+		return
 	case "keepalive":
 		err = parseOnOff(&req.KeepAlive, args)
 		return
@@ -773,7 +783,7 @@ func parseSortHeader(field *[]*SortField, value []byte) (err error) {
 	return
 }
 
-func parseStatsOp(op GroupOperator, value []byte, table string, stats *[]*Filter) (err error) {
+func parseStatsOp(op GroupOperator, value []byte, table TableName, stats *[]*Filter) (err error) {
 	num, cerr := strconv.Atoi(string(value))
 	if cerr == nil && num == 0 {
 		err = ParseStats([]byte("state != 9999"), table, stats)
@@ -913,12 +923,12 @@ func (req *Request) parseResult(resBytes *[]byte) (*ResultSet, *ResultMetaData, 
 			err = aErr
 			return
 		}
-		row, dErr := djson.Decode(rowBytes)
+		row, dErr := djson.DecodeArray(rowBytes)
 		if dErr != nil {
 			err = dErr
 			return
 		}
-		res = append(res, row.([]interface{}))
+		res = append(res, row)
 	})
 	// trailing comma error will be ignored
 	if jErr != nil && offset < len(*resBytes)-3 {
@@ -937,11 +947,11 @@ func (req *Request) IsDefaultSortOrder() bool {
 		return true
 	}
 	switch req.Table {
-	case "services":
+	case TableServices:
 		if len(req.Sort) == 2 && req.Sort[0].Name == "host_name" && req.Sort[0].Direction == Asc && req.Sort[1].Name == "description" && req.Sort[1].Direction == Asc {
 			return true
 		}
-	case "hosts":
+	case TableHosts:
 		if len(req.Sort) == 1 && req.Sort[0].Name == "name" && req.Sort[0].Direction == Asc {
 			return true
 		}

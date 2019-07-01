@@ -35,6 +35,7 @@ func TestRequestHeader(t *testing.T) {
 		"GET hosts\nColumns: name\nFilter: last_check >= 123456789\n\n",
 		"GET hosts\nColumns: name\nFilter: last_check =\n\n",
 		"GET hosts\nAuthUser: testUser\n\n",
+		"GET hosts\nColumns: name\nFilter: contact_groups >= test\nNegate:\n\n",
 	}
 	for _, str := range testRequestStrings {
 		buf := bufio.NewReader(bytes.NewBufferString(str))
@@ -51,7 +52,7 @@ func TestRequestHeader(t *testing.T) {
 func TestRequestHeaderTable(t *testing.T) {
 	buf := bufio.NewReader(bytes.NewBufferString("GET hosts\n"))
 	req, _, _ := NewRequest(buf)
-	if err := assertEq("hosts", req.Table); err != nil {
+	if err := assertEq("hosts", req.Table.String()); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -82,17 +83,17 @@ func TestRequestHeaderColumns(t *testing.T) {
 
 func TestRequestHeaderSort(t *testing.T) {
 	req, _, _ := NewRequest(bufio.NewReader(bytes.NewBufferString("GET hosts\nColumns: latency state name\nSort: name desc\nSort: state asc\n")))
-	if err := assertEq(&SortField{Name: "name", Direction: Desc, Index: 0, Column: Objects.Tables["hosts"].GetColumn("name")}, req.Sort[0]); err != nil {
+	if err := assertEq(&SortField{Name: "name", Direction: Desc, Index: 0, Column: Objects.Tables[TableHosts].GetColumn("name")}, req.Sort[0]); err != nil {
 		t.Fatal(err)
 	}
-	if err := assertEq(&SortField{Name: "state", Direction: Asc, Index: 0, Column: Objects.Tables["hosts"].GetColumn("state")}, req.Sort[1]); err != nil {
+	if err := assertEq(&SortField{Name: "state", Direction: Asc, Index: 0, Column: Objects.Tables[TableHosts].GetColumn("state")}, req.Sort[1]); err != nil {
 		t.Fatal(err)
 	}
 }
 
 func TestRequestHeaderSortCust(t *testing.T) {
 	req, _, _ := NewRequest(bufio.NewReader(bytes.NewBufferString("GET hosts\nColumns: name custom_variables\nSort: custom_variables TEST asc\n")))
-	if err := assertEq(&SortField{Name: "custom_variables", Direction: Asc, Index: 0, Args: "TEST", Column: Objects.Tables["hosts"].GetColumn("custom_variables")}, req.Sort[0]); err != nil {
+	if err := assertEq(&SortField{Name: "custom_variables", Direction: Asc, Index: 0, Args: "TEST", Column: Objects.Tables[TableHosts].GetColumn("custom_variables")}, req.Sort[0]); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -1035,6 +1036,29 @@ func TestShouldBeScheduled(t *testing.T) {
 
 	if err := assertEq(1., (*res)[0][0]); err != nil {
 		t.Error(err)
+	}
+
+	if err := StopTestPeer(peer); err != nil {
+		panic(err.Error())
+	}
+}
+
+func TestNegate(t *testing.T) {
+	peer := StartTestPeer(1, 10, 10)
+	PauseTestPeers(peer)
+
+	res, _, err := peer.QueryString("GET hosts\nColumns: name\nFilter: host_name = testhost_1\nNegate:\n\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = assertEq(9, len(*res)); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, host := range *res {
+		if err = assertNeq("testhost_1", host[0]); err != nil {
+			t.Error(err)
+		}
 	}
 
 	if err := StopTestPeer(peer); err != nil {

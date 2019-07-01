@@ -7,14 +7,14 @@ import (
 // DataStore contains the actual data rows with a reference to the table and peer.
 type DataStore struct {
 	noCopy                  noCopy
-	DynamicColumnCache      ColumnList              // contains list of columns used to run periodic update
-	DynamicColumnNamesCache []string                // contains list of keys used to run periodic update
-	DataSizes               map[DataType]int        // contains the sizes for each data type
-	Peer                    *Peer                   // reference to our peer
-	Data                    []*DataRow              // the actual data rows
-	Index                   map[string]*DataRow     // access data rows from primary key, ex.: hostname or comment id
-	Table                   *Table                  // reference to table definition
-	dupStringList           map[[32]byte]*[]*string // lookup pointer to other stringlists during initialisation
+	DynamicColumnCache      ColumnList            // contains list of columns used to run periodic update
+	DynamicColumnNamesCache []string              // contains list of keys used to run periodic update
+	DataSizes               map[DataType]int      // contains the sizes for each data type
+	Peer                    *Peer                 // reference to our peer
+	Data                    []*DataRow            // the actual data rows
+	Index                   map[string]*DataRow   // access data rows from primary key, ex.: hostname or comment id
+	Table                   *Table                // reference to table definition
+	dupStringList           map[[32]byte][]string // lookup pointer to other stringlists during initialisation
 }
 
 // NewDataStore creates a new datastore with columns based on given flags
@@ -24,7 +24,7 @@ func NewDataStore(table *Table, peer interface{}) (d *DataStore) {
 		Index:                   make(map[string]*DataRow),
 		DynamicColumnCache:      make(ColumnList, 0),
 		DynamicColumnNamesCache: make([]string, 0),
-		dupStringList:           make(map[[32]byte]*[]*string),
+		dupStringList:           make(map[[32]byte][]string),
 		Table:                   table,
 	}
 
@@ -84,19 +84,18 @@ func (d *DataStore) InsertData(data *ResultSet, columns *ColumnList) error {
 // AddItem adds an new DataRow to a DataStore.
 func (d *DataStore) AddItem(row *DataRow) {
 	d.Data = append(d.Data, row)
-	if row.ID != "" {
-		d.Index[row.ID] = row
+	if len(d.Table.PrimaryKey) > 0 {
+		d.Index[row.GetID()] = row
 	}
 }
 
 // RemoveItem removes a DataRow from a DataStore.
 func (d *DataStore) RemoveItem(row *DataRow) {
-	if row.ID != "" {
-		delete(d.Index, row.ID)
+	if len(d.Table.PrimaryKey) > 0 {
+		delete(d.Index, row.GetID())
 	}
 	for i := range d.Data {
-		r := d.Data[i]
-		if r.ID == row.ID {
+		if d.Data[i] == row {
 			d.Data = append(d.Data[:i], d.Data[i+1:]...)
 			return
 		}
