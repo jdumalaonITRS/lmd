@@ -15,11 +15,9 @@
 RETVAL=0
 prog="lmd"
 pidfile=/opt/monitor/var/lmd/lmd.run
-exe="/opt/monitor/var/lmd/bin/lmd --config=/opt/monitor/var/lmd/lmd.ini --logfile=/opt/monitor/var/lmd/lmd.log --pidfile=$pidfile"
+exe="asmonitor /opt/monitor/var/lmd/bin/lmd --config=/opt/monitor/var/lmd/lmd.ini --logfile=/opt/monitor/var/lmd/lmd.log --pidfile=$pidfile"
 
 start() {
-	sed -i -e "s/\/rw\/live$/\/rw\/live_tmp/g" /opt/monitor/etc/mconf/livestatus.cfg
-	service naemon restart
 	echo -n $"Starting $prog: "
 	$exe &
 	RETVAL=$?

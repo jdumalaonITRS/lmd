@@ -97,6 +97,8 @@ sed -i -e "s/\/rw\/live_tmp$/\/rw\/live/g" /opt/monitor/etc/mconf/livestatus.cfg
 fi
 
 %files
+%defattr(644,monitor,apache,755)
+%attr(755,monitor,apache) %prefix/lmd/bin/lmd
 %prefix/lmd
 %exclude %prefix/lmd/pkg
 %exclude %prefix/lmd/src

@@ -1,4 +1,5 @@
 /opt/monitor/var/lmd/lmd.log {
+    su monitor apache
     weekly
     rotate 10
     compress
@@ -13,5 +14,5 @@
             /sbin/service lmd condrestart 2> /dev/null > /dev/null || true
         fi
     endscript
-    create 0664 root root
+    create 0664 monitor apache
 }
