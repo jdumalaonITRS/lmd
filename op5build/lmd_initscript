@@ -10,67 +10,84 @@
 # Description:       op5 lmd is a cached monitor
 ### END INIT INFO
 
-. /etc/init.d/functions
+. /etc/rc.d/init.d/functions
 
 RETVAL=0
 prog="lmd"
-pidfile=/opt/monitor/var/lmd/lmd.run
-exe="asmonitor /opt/monitor/var/lmd/bin/lmd --config=/opt/monitor/var/lmd/lmd.ini --logfile=/opt/monitor/var/lmd/lmd.log --pidfile=$pidfile"
+piddir=/var/run/lmd
+pidfile=$piddir/lmd.pid
+exe="/usr/bin/lmd"
+args="--config=/etc/op5/lmd/lmd.ini --logfile=/var/log/op5/lmd.log --pidfile=$pidfile"
+user="monitor"
+lockfile=/var/lock/subsys/op5-lmd
 
 start() {
-	echo -n $"Starting $prog: "
-	$exe &
-	RETVAL=$?
-	echo
-	sleep 4
-	chmod 777 /opt/monitor/var/rw/live
-	return $RETVAL
+      # create PID dir if it does not exist
+      if [ ! -d $piddir ]; then
+            mkdir $piddir
+      fi
+
+      chown $user $piddir
+
+      echo -n $"Starting $prog: "
+      daemon --user=$user --pidfile=$pidfile " { $exe $args & } "
+      RETVAL=$?
+      echo
+
+      if [ -d /var/lock/subsys ]; then
+            test $RETVAL -eq 0 && touch $lockfile
+      fi
+
+      sleep 4
+      chmod 777 /opt/monitor/var/rw/live
+      return $RETVAL
 }
 
 stop() {
-	echo -n $"Stopping $prog: "
-	killproc -p $pidfile /opt/monitor/var/lmd/bin/lmd
-	RETVAL=$?
-	echo
-	return $RETVAL
+      echo -n $"Stopping $prog: "
+      killproc -p $pidfile $exe
+      RETVAL=$?
+      echo
+      test $RETVAL -eq 0 && rm -f $lockfile
+      return $RETVAL
 }
 
 reload() {
-	stop
-	start
+      stop
+      start
 }
 
 restart() {
-	stop
-	start
+      stop
+      start
 }
 
 case "$1" in
-  start)
-	status -p $pidfile $prog && exit 0
-	start
-	;;
-  stop)
-	status -p $pidfile $prog || exit 0
-	stop
-	;;
-  restart)
-	restart
-	;;
-  reload)
-	reload
-	;;
-  condrestart)
-	status -p $pidfile $prog || exit 0
-	restart
-	;;
-  status)
-	status -p $pidfile $prog
-	RETVAL=$?
-	;;
-  *)
-	echo $"Usage: $0 {start|stop|status|restart|condrestart|reload}"
-	RETVAL=1
+      start)
+            status -p $pidfile $prog && exit 0
+            start
+            ;;
+      stop)
+            status -p $pidfile $prog || exit 0
+            stop
+            ;;
+      restart)
+            restart
+            ;;
+      reload)
+            reload
+            ;;
+      condrestart)
+            status -p $pidfile $prog || exit 0
+            restart
+            ;;
+      status)
+            status -p $pidfile $prog
+            RETVAL=$?
+            ;;
+      *)
+            echo $"Usage: $0 {start|stop|status|restart|condrestart|reload}"
+            RETVAL=1
 esac
 
 exit $RETVAL

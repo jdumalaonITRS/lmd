@@ -1,20 +1,14 @@
-%define daemon_user monitor
-%define daemon_group apache
 %define not_systemd (0%{?fedora} && 0%{?fedora} < 18) || (0%{?rhel} && 0%{?rhel} < 7)
-%define lmd_path github.com/sni/lmd
-%define debug_package %{nil}
-%define __arch_install_post %{nil}
+%global debug_package %{nil}
 
 Name:		op5-lmd
 Version:	%{op5version}
 Release:	%{op5release}%{?dist}
-Summary:	op5 monitor lmd integration
-
+Summary:	OP5 monitor lmd integration
 License:	GPLv3
 URL:		http://www.op5.com
 Source:		%name-%version.tar.gz
-BuildRoot: 	%{_tmppath}/%{name}-%{version}
-Prefix: 	/opt/monitor/var
+BuildRoot:	%{_tmppath}/%{name}-%{version}
 
 %if %not_systemd
 %else
@@ -28,12 +22,15 @@ Requires: monitor-ninja
 Requires: monitor-livestatus
 
 %description
-This package configures lmd integration with op5 monitor
+This package configures lmd integration with OP5 monitor
 
 %prep
 %setup -q
 
 %build
+# make sure the default golang bin is in our path
+export PATH=$PATH:$HOME/go/bin/
+make all
 
 %pre
 %if %not_systemd
@@ -45,28 +42,28 @@ if chkconfig --list lmd &>/dev/null; then
 fi
 %endif
 
-
 %install
 rm -rf %buildroot
-mkdir -p %buildroot%prefix/lmd
-export GOROOT=/usr/lib/golang
-export GOPATH=%buildroot%prefix/lmd
-git config --global url.git://github.com/.insteadOf https://github.com/
-go get golang.org/x/tools/cmd/goimports
-export PATH=$PATH:%buildroot%prefix/lmd/bin
-make all
-cp -f lmd/lmd %buildroot%prefix/lmd/bin
+# copy LMD binary to /usr/bin/
+mkdir -p %buildroot/%_bindir/
+cp -f lmd/lmd %buildroot/%_bindir/
+
+# config file
+mkdir -p %buildroot%_sysconfdir/op5/lmd/
+cp -rf op5build/lmd.ini %buildroot%_sysconfdir/op5/lmd/
+
+# service/init files
 %if %not_systemd
-mkdir -p %buildroot%_sysconfdir/init.d
-cp op5build/lmd_initscript %{buildroot}%_sysconfdir/init.d/lmd
+	mkdir -p %buildroot%_sysconfdir/init.d
+	cp op5build/lmd_initscript %{buildroot}%_sysconfdir/init.d/lmd
 %else
-mkdir --parents %{buildroot}%{_unitdir}
-cp op5build/lmd.service %{buildroot}%{_unitdir}/lmd.service
+	mkdir --parents %{buildroot}%{_unitdir}
+	cp op5build/lmd.service %{buildroot}%{_unitdir}/lmd.service
 %endif
-touch %buildroot%prefix/lmd/lmd.log
-cp -rf op5build/lmd.ini docs README.md Changes LICENSE %buildroot%prefix/lmd/
+
+# logrotation
 mkdir -p %buildroot%_sysconfdir/logrotate.d
-cp op5build/lmd.logrotate %{buildroot}%_sysconfdir/logrotate.d/lmd
+cp op5build/op5-lmd.logrotate %{buildroot}%_sysconfdir/logrotate.d/op5-lmd
 
 %post
 sed -i -e "s/\/rw\/live$/\/rw\/live_tmp/g" /opt/monitor/etc/mconf/livestatus.cfg
@@ -97,19 +94,20 @@ sed -i -e "s/\/rw\/live_tmp$/\/rw\/live/g" /opt/monitor/etc/mconf/livestatus.cfg
 fi
 
 %files
-%defattr(644,monitor,apache,755)
-%attr(755,monitor,apache) %prefix/lmd/bin/lmd
-%prefix/lmd
-%exclude %prefix/lmd/pkg
-%exclude %prefix/lmd/src
+%attr(755,root,root) %_bindir/lmd
+%attr(644,monitor,apache) %config(noreplace) %_sysconfdir/op5/lmd/lmd.ini
 %if %not_systemd
 %attr(0755,root,root) %_sysconfdir/init.d/lmd
 %else
-%attr(664, root, root) %{_unitdir}/lmd.service
+%attr(664,root,root) %{_unitdir}/lmd.service
 %endif
-%attr(644, root, root) %_sysconfdir/logrotate.d/lmd
+%attr(644,root,root) %config(noreplace) %_sysconfdir/logrotate.d/op5-lmd
+%license LICENSE
+%doc README.md
 
 %clean
 rm -rf %buildroot
 
 %changelog
+* Tue Jul 2 2019 Jacob Hansen <jhansen@op5.com> - 2019.g
+- Specfile rewrite and use best-practice system paths.

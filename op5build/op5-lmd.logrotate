@@ -1,4 +1,4 @@
-/opt/monitor/var/lmd/lmd.log {
+/var/log/op5/lmd.log {
     su monitor apache
     weekly
     rotate 10
