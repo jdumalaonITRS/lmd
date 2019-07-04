@@ -5,7 +5,7 @@ After=syslog.target network.target naemon
 [Service]
 ExecStart=/usr/bin/lmd --config=/etc/op5/lmd/lmd.ini --logfile=/var/log/op5/lmd.log &
 ExecStartPost=/bin/sleep 4
-ExecStartPost=/bin/chmod 777 /opt/monitor/var/rw/live
+ExecStartPost=/bin/chmod 660 /opt/monitor/var/rw/live
 Restart=always
 User=monitor
 

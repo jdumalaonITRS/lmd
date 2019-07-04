@@ -39,7 +39,7 @@ start() {
       fi
 
       sleep 4
-      chmod 777 /opt/monitor/var/rw/live
+      chmod 660 /opt/monitor/var/rw/live
       return $RETVAL
 }
 
