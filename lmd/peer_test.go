@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"fmt"
 	"sync"
 	"testing"
 )
@@ -155,11 +156,35 @@ func TestParseResultJSONBroken2(t *testing.T) {
 	}
 }
 
+func TestParseResultJSONEscapeSequences(t *testing.T) {
+	req, _, err := NewRequest(bufio.NewReader(bytes.NewBufferString("GET services\nColumns: host_name\nOutputFormat: json\n")))
+	if err != nil {
+		panic(err.Error())
+	}
+	for _, s := range []string{"\x00", "\x01", "\x02", "\x02", "\x06", "a\xc5z"} {
+		data := []byte(fmt.Sprintf("[[\"null%s\"]]", s))
+
+		InitLogging(&Config{LogLevel: "off", LogFile: "stderr"})
+		res, _, err := req.parseResult(&data)
+		InitLogging(&Config{LogLevel: testLogLevel, LogFile: "stderr"})
+
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := assertEq(1, len(*res)); err != nil {
+			t.Error(err)
+		}
+		if err := assertLike("null", (*res)[0][0].(string)); err != nil {
+			t.Error(err)
+		}
+	}
+}
+
 func TestPeerUpdate(t *testing.T) {
 	peer := StartTestPeer(1, 10, 10)
 	PauseTestPeers(peer)
 
-	res := peer.UpdateAllTables()
+	res := peer.UpdateFull()
 	if err := assertEq(true, res); err != nil {
 		t.Error(err)
 	}
@@ -173,7 +198,7 @@ func TestPeerDeltaUpdate(t *testing.T) {
 	peer := StartTestPeer(1, 10, 10)
 	PauseTestPeers(peer)
 
-	res := peer.UpdateDeltaTables()
+	res := peer.UpdateDelta(0)
 	if err := assertEq(true, res); err != nil {
 		t.Error(err)
 	}

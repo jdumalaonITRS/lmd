@@ -41,7 +41,7 @@ var Build string
 
 const (
 	// VERSION contains the actual lmd version
-	VERSION = "1.6.0"
+	VERSION = "1.6.1"
 	// NAME defines the name of this project
 	NAME = "lmd"
 )
@@ -256,7 +256,7 @@ func mainLoop(mainSignalChannel chan os.Signal) (exitCode int) {
 	once.Do(PrintVersion)
 
 	// just wait till someone hits ctrl+c or we have to reload
-	statsTimer := time.NewTicker(10 * time.Second)
+	statsTimer := time.NewTicker(30 * time.Second)
 	for {
 		select {
 		case sig := <-osSignalChannel:
@@ -335,7 +335,7 @@ func initializePeers(localConfig *Config, waitGroupPeers *sync.WaitGroup, waitGr
 		}
 		if !found {
 			PeerMap[id].Stop()
-			PeerMap[id].Clear()
+			PeerMap[id].ClearLocked()
 			PeerMapRemove(id)
 		}
 	}
@@ -518,6 +518,7 @@ func mainSignalHandler(sig os.Signal, shutdownChannel chan bool, waitGroupPeers 
 		return (-1)
 	case syscall.SIGUSR1:
 		log.Errorf("requested thread dump via signal %s", sig)
+		logCurrentsLocks()
 		logThreaddump()
 		return (0)
 	default:
@@ -526,7 +527,8 @@ func mainSignalHandler(sig os.Signal, shutdownChannel chan bool, waitGroupPeers 
 	return (1)
 }
 
-func logThreaddump() {
+func logCurrentsLocks() {
+	log.Errorf("*** current held locks:")
 	PeerMapLock.RLock()
 	for id := range PeerMap {
 		p := PeerMap[id]
@@ -540,6 +542,10 @@ func logThreaddump() {
 		}
 	}
 	PeerMapLock.RUnlock()
+}
+
+func logThreaddump() {
+	log.Errorf("*** full thread dump:")
 	buf := make([]byte, 1<<16)
 	runtime.Stack(buf, true)
 	log.Errorf("%s", buf)
@@ -721,6 +727,8 @@ func ByteCountBinary(b int64) string {
 }
 
 func updateStatistics() {
-	promStringDedupCount.Set(float64(stringdedup.Size()))
+	size := stringdedup.Size()
+	promStringDedupCount.Set(float64(size))
 	promStringDedupBytes.Set(float64(stringdedup.ByteCount()))
+	promStringDedupIndexBytes.Set(float64(32 * size))
 }
