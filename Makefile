@@ -21,7 +21,6 @@ EXTERNAL_DEPS = \
 	github.com/davecgh/go-spew/spew \
 	golang.org/x/tools/cmd/goimports \
 	github.com/jmhodges/copyfighter \
-	github.com/golangci/golangci-lint/cmd/golangci-lint \
 	golang.org/x/tools/cmd/stringer \
 	github.com/json-iterator/go \
 	github.com/lkarlslund/stringdedup \
