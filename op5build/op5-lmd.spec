@@ -17,8 +17,6 @@ BuildRequires: git
 %endif
 BuildRequires: golang
 Requires: op5-naemon
-Requires: op5-monitor
-Requires: monitor-ninja
 Requires: monitor-livestatus
 
 %description
