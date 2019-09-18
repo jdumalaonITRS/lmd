@@ -1,6 +1,6 @@
 [Unit]
 Description=op5 lmd integration
-After=syslog.target network.target
+After=syslog.target network.target naemon.service
 
 [Service]
 ExecStart=/usr/bin/lmd --config=/etc/op5/lmd/lmd.ini --logfile=/var/log/op5/lmd.log &
