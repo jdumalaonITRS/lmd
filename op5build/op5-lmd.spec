@@ -63,6 +63,10 @@ cp -rf op5build/lmd.ini %buildroot%_sysconfdir/op5/lmd/
 mkdir -p %buildroot%_sysconfdir/logrotate.d
 cp op5build/op5-lmd.logrotate %{buildroot}%_sysconfdir/logrotate.d/op5-lmd
 
+# Make sure the log file exists
+mkdir --parents --mode 775 %buildroot/var/log/op5
+touch %buildroot/var/log/op5/lmd.log
+
 %post
 sed -i -e "s/\/rw\/live$/\/rw\/live_tmp/g" /opt/monitor/etc/mconf/livestatus.cfg
 %if %not_systemd
@@ -102,10 +106,14 @@ fi
 %attr(644,root,root) %config(noreplace) %_sysconfdir/logrotate.d/op5-lmd
 %license LICENSE
 %doc README.md
+%dir %attr(775,monitor,apache) /var/log/op5
+%attr(644,monitor,apache) %ghost /var/log/op5/lmd.log
 
 %clean
 rm -rf %buildroot
 
 %changelog
+* Wed Sep 25 2019 Jacob Hansen <jhansen@op5.com> - 2019.i
+- Make sure the log file is being created.
 * Tue Jul 2 2019 Jacob Hansen <jhansen@op5.com> - 2019.g
 - Specfile rewrite and use best-practice system paths.
