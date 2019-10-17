@@ -61,8 +61,8 @@ type Peer struct {
 	lastResponse    *[]byte
 	HTTPClient      *http.Client
 	connectionCache chan net.Conn
-	CommentsCache   map[*DataRow][]int32
-	DowntimesCache  map[*DataRow][]int32
+	CommentsCache   map[*DataRow][]int64
+	DowntimesCache  map[*DataRow][]int64
 }
 
 // PeerStatus contains the different states a peer can have
@@ -687,12 +687,13 @@ func (p *Peer) InitAllTables() bool {
 
 			// if its http and a status request, try a processinfo query to fetch all backends
 			configtool, _ := p.fetchConfigTool() // this also sets the thruk version so it should be called first
-			err = p.checkAvailableTables()
+			p.fetchRemotePeers()
+			p.checkStatusFlags()
+
+			err = p.checkAvailableTables() // must be done after checkStatusFlags, because it does not work on Icinga2
 			if err != nil {
 				return false
 			}
-			p.fetchRemotePeers()
-			p.checkStatusFlags()
 
 			// check thruk config tool settings
 			p.PeerLock.Lock()
@@ -1681,6 +1682,10 @@ func (p *Peer) checkStatusFlags() {
 }
 
 func (p *Peer) checkAvailableTables() (err error) {
+	if p.HasFlag(Icinga2) {
+		log.Debugf("[%s] Icinga2 does not support checking tables and columns", p.Name)
+		return
+	}
 	availableTables, err := p.GetSupportedColumns()
 	if err != nil {
 		return
@@ -2695,9 +2700,9 @@ func (p *Peer) RebuildDowntimesCache() {
 }
 
 // buildDowntimesCache returns the downtimes/comments cache
-func (p *Peer) buildDowntimeCommentsCache(name TableName) map[*DataRow][]int32 {
+func (p *Peer) buildDowntimeCommentsCache(name TableName) map[*DataRow][]int64 {
 	p.DataLock.RLock()
-	cache := make(map[*DataRow][]int32)
+	cache := make(map[*DataRow][]int64)
 	store := p.Tables[name]
 	idIndex := store.Table.GetColumn("id").Index
 	hostNameIndex := store.Table.GetColumn("host_name").Index
@@ -2715,7 +2720,7 @@ func (p *Peer) buildDowntimeCommentsCache(name TableName) map[*DataRow][]int32 {
 		} else {
 			obj = hostIndex[key]
 		}
-		id := row.dataInt[idIndex]
+		id := row.dataInt64[idIndex]
 		cache[obj] = append(cache[obj], id)
 	}
 	p.DataLock.RUnlock()
