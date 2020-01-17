@@ -14,6 +14,26 @@ import (
 	"time"
 )
 
+const (
+	// LogRequestExtraTimeout sets the extra timeout while handling log requests
+	LogRequestExtraTimeout = 1 * time.Minute
+
+	// HTTPServerRequestTimeout sets the read/write timeout for the HTTP Server
+	HTTPServerRequestTimeout = 5 * time.Second
+
+	// RequestReadTimeout sets the read timeout when listening to incoming requests
+	RequestReadTimeout = 10 * time.Second
+
+	// KeepAliveWaitInterval sets the interval at which the listeners checks for new requests in keepalive connections
+	KeepAliveWaitInterval = 100 * time.Millisecond
+
+	// WaitTimeoutExtraMillis sets the extra number of milliseconds to add when waiting for WaitTimeout queries
+	WaitTimeoutExtraMillis = 1000
+
+	// PeerCommandTimeout sets the timeout when waiting for peers to process commands
+	PeerCommandTimeout = 9500 * time.Millisecond
+)
+
 // Listener is the object which handles incoming connections
 type Listener struct {
 	noCopy           noCopy
@@ -43,7 +63,7 @@ func NewListener(localConfig *Config, listen string, waitGroupInit *sync.WaitGro
 
 // QueryServer handles a single client connection.
 // It returns any error encountered.
-func QueryServer(c net.Conn) error {
+func QueryServer(c net.Conn, conf *Config) error {
 	localAddr := c.LocalAddr().String()
 	keepAlive := false
 	remote := c.RemoteAddr().String()
@@ -56,7 +76,7 @@ func QueryServer(c net.Conn) error {
 		if !keepAlive {
 			promFrontendConnections.WithLabelValues(localAddr).Inc()
 			log.Debugf("incoming request from: %s to %s", remote, localAddr)
-			c.SetDeadline(time.Now().Add(time.Duration(10) * time.Second))
+			c.SetDeadline(time.Now().Add(RequestReadTimeout))
 		}
 
 		reqs, err := ParseRequests(c)
@@ -75,17 +95,17 @@ func QueryServer(c net.Conn) error {
 		switch {
 		case len(reqs) > 0:
 			promFrontendQueries.WithLabelValues(localAddr).Add(float64(len(reqs)))
-			keepAlive, err = ProcessRequests(reqs, c, remote)
+			keepAlive, err = ProcessRequests(reqs, c, remote, conf)
 
 			// keep open keepalive request until either the client closes the connection or the deadline timeout is hit
 			if keepAlive {
 				log.Debugf("keepalive connection from %s, waiting for more requests", remote)
-				c.SetDeadline(time.Now().Add(time.Duration(10) * time.Second))
+				c.SetDeadline(time.Now().Add(RequestReadTimeout))
 				continue
 			}
 		case keepAlive:
 			// wait up to deadline after the last keep alive request
-			time.Sleep(100 * time.Millisecond)
+			time.Sleep(KeepAliveWaitInterval)
 			continue
 		default:
 			err = errors.New("bad request: empty request")
@@ -98,7 +118,7 @@ func QueryServer(c net.Conn) error {
 }
 
 // ProcessRequests creates response for all given requests
-func ProcessRequests(reqs []*Request, c net.Conn, remote string) (keepalive bool, err error) {
+func ProcessRequests(reqs []*Request, c net.Conn, remote string, conf *Config) (keepalive bool, err error) {
 	if len(reqs) == 0 {
 		return
 	}
@@ -111,20 +131,16 @@ func ProcessRequests(reqs []*Request, c net.Conn, remote string) (keepalive bool
 			}
 		} else {
 			// send all pending commands so far
-			if len(commandsByPeer) > 0 {
-				code, msg := SendCommands(commandsByPeer)
-				commandsByPeer = make(map[string][]string)
-				if code != 200 {
-					_, err = c.Write([]byte(fmt.Sprintf("%d: %s\n", code, msg)))
-					return
-				}
-				log.Infof("incoming command request from %s to %s finished in %s", remote, c.LocalAddr().String(), time.Since(t1))
+			err = SendRemainingCommands(c, remote, &commandsByPeer)
+			if err != nil {
+				return
 			}
+
 			if req.WaitTrigger != "" {
-				c.SetDeadline(time.Now().Add(time.Duration(req.WaitTimeout+1000) * time.Millisecond))
+				c.SetDeadline(time.Now().Add(time.Duration(req.WaitTimeout+WaitTimeoutExtraMillis) * time.Millisecond))
 			}
 			if req.Table == TableLog {
-				c.SetDeadline(time.Now().Add(time.Duration(60) * time.Second))
+				c.SetDeadline(time.Now().Add(LogRequestExtraTimeout))
 			}
 			var response *Response
 			response, err = req.GetResponse()
@@ -145,6 +161,11 @@ func ProcessRequests(reqs []*Request, c net.Conn, remote string) (keepalive bool
 			size, err = response.Send(c)
 			duration := time.Since(t1)
 			log.Infof("incoming %s request from %s to %s finished in %s, response size: %s", req.Table.String(), remote, c.LocalAddr().String(), duration.String(), ByteCountBinary(size))
+			if duration > time.Duration(conf.LogSlowQueryThreshold)*time.Second {
+				log.Warnf("slow query finished after %s, response size: %s\n%s", duration.String(), ByteCountBinary(size), strings.TrimSpace(req.String()))
+			} else if size > int64(conf.LogHugeQueryThreshold*1024*1024) {
+				log.Warnf("huge query finished after %s, response size: %s\n%s", duration.String(), ByteCountBinary(size), strings.TrimSpace(req.String()))
+			}
 			if err != nil || !req.KeepAlive {
 				return
 			}
@@ -152,17 +173,29 @@ func ProcessRequests(reqs []*Request, c net.Conn, remote string) (keepalive bool
 	}
 
 	// send all remaining commands
-	if len(commandsByPeer) > 0 {
-		t1 := time.Now()
-		code, msg := SendCommands(commandsByPeer)
-		if code != 200 {
-			c.Write([]byte(fmt.Sprintf("%d: %s\n", code, msg)))
-			return
-		}
-		log.Infof("incoming command request from %s to %s finished in %s", remote, c.LocalAddr().String(), time.Since(t1))
+	err = SendRemainingCommands(c, remote, &commandsByPeer)
+	if err != nil {
+		return
 	}
 
 	return reqs[len(reqs)-1].KeepAlive, nil
+}
+
+// SendRemainingCommands sends all queued commands
+func SendRemainingCommands(c net.Conn, remote string, commandsByPeer *map[string][]string) (err error) {
+	if len(*commandsByPeer) == 0 {
+		return
+	}
+	t1 := time.Now()
+	code, msg := SendCommands(*commandsByPeer)
+	// clear the commands queue
+	*commandsByPeer = make(map[string][]string)
+	if code != 200 {
+		_, err = c.Write([]byte(fmt.Sprintf("%d: %s\n", code, msg)))
+		return
+	}
+	log.Infof("incoming command request from %s to %s finished in %s", remote, c.LocalAddr().String(), time.Since(t1))
+	return
 }
 
 // SendCommands sends commands for this request to all selected remote sites.
@@ -184,8 +217,8 @@ func SendCommands(commandsByPeer map[string][]string) (code int, msg string) {
 		}(p)
 	}
 
-	// Wait up to 10 seconds for all commands being sent
-	if waitTimeout(wg, 9500*time.Millisecond) {
+	// Wait up to 9.5 seconds for all commands being sent
+	if waitTimeout(wg, PeerCommandTimeout) {
 		code = 202
 		msg = "sending command timed out but will continue in background"
 		return
@@ -292,27 +325,10 @@ func (l *Listener) LocalListenerLivestatus(connType string, listen string) {
 
 		// background waiting for query to finish/timeout
 		go func() {
-			// process client request with a timeout
-
 			// make sure we log panics properly
 			defer logPanicExit()
 
-			ch := make(chan error, 1)
-			go func() {
-				// make sure we log panics properly
-				defer logPanicExit()
-
-				ch <- QueryServer(fd)
-			}()
-			select {
-			case <-ch:
-			// request finishes normally
-			case <-time.After(time.Duration(l.LocalConfig.ListenTimeout) * time.Second):
-				localAddr := fd.LocalAddr().String()
-				remote := fd.RemoteAddr().String()
-				log.Warnf("client request from %s to %s timed out", remote, localAddr)
-			}
-			fd.Close()
+			handleConnection(fd, l.LocalConfig)
 		}()
 	}
 }
@@ -360,10 +376,29 @@ func (l *Listener) LocalListenerHTTP(httpType string, listen string) {
 	// Wait for and handle http requests
 	server := &http.Server{
 		Handler:      router,
-		ReadTimeout:  5 * time.Second,
-		WriteTimeout: 5 * time.Second,
+		ReadTimeout:  HTTPServerRequestTimeout,
+		WriteTimeout: HTTPServerRequestTimeout,
 	}
 	server.Serve(c)
+}
+
+func handleConnection(c net.Conn, localConfig *Config) {
+	ch := make(chan error, 1)
+	go func() {
+		// make sure we log panics properly
+		defer logPanicExit()
+
+		ch <- QueryServer(c, localConfig)
+	}()
+	select {
+	case <-ch:
+	// request finishes normally
+	case <-time.After(time.Duration(localConfig.ListenTimeout) * time.Second):
+		localAddr := c.LocalAddr().String()
+		remote := c.RemoteAddr().String()
+		log.Warnf("client request from %s to %s timed out", remote, localAddr)
+	}
+	c.Close()
 }
 
 func getTLSListenerConfig(localConfig *Config) (config *tls.Config, err error) {

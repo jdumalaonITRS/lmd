@@ -10,6 +10,7 @@ package main
 
 import (
 	"crypto/tls"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -21,18 +22,19 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"regexp"
 	"runtime"
 	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"syscall"
 	"time"
 
 	"github.com/BurntSushi/toml"
 	"github.com/lkarlslund/stringdedup"
+	"github.com/sasha-s/go-deadlock"
 )
 
 // Build contains the current git commit id
@@ -41,13 +43,31 @@ var Build string
 
 const (
 	// VERSION contains the actual lmd version
-	VERSION = "1.7.1"
+	VERSION = "1.8.1"
 	// NAME defines the name of this project
 	NAME = "lmd"
-)
 
-const loose = "loose"
-const strict = "strict"
+	// AuthLoose is used for loose authorization when host contacts are granted all services
+	AuthLoose = "loose"
+
+	// AuthStrict is used for strict authorization when host contacts are not granted all services
+	AuthStrict = "strict"
+
+	// ExitCritical is used to non-ok exits
+	ExitCritical = 2
+
+	// ExitUnknown is used as exit code for help
+	ExitUnknown = 3
+
+	// StatsTimerInterval sets the interval at which statistics will be updated
+	StatsTimerInterval = 30 * time.Second
+
+	// HTTPClientTimeout sets the default HTTP client timeout
+	HTTPClientTimeout = 30 * time.Second
+
+	// BlockProfileRateInterval sets the profiling interval when started with -profile
+	BlockProfileRateInterval = 10
+)
 
 // https://github.com/golang/go/issues/8005#issuecomment-190753527
 type noCopy struct{}
@@ -87,27 +107,33 @@ func (c *Connection) Equals(other *Connection) bool {
 
 // Config defines the available configuration options from supplied config files.
 type Config struct {
-	Listen               []string
-	Nodes                []string
-	TLSCertificate       string
-	TLSKey               string
-	TLSClientPems        []string
-	Updateinterval       int64
-	FullUpdateInterval   int64
-	Connections          []Connection
-	LogFile              string
-	LogLevel             string
-	ConnectTimeout       int
-	NetTimeout           int
-	ListenTimeout        int
-	ListenPrometheus     string
-	SkipSSLCheck         int
-	IdleTimeout          int64
-	IdleInterval         int64
-	StaleBackendTimeout  int
-	BackendKeepAlive     bool
-	ServiceAuthorization string
-	GroupAuthorization   string
+	Listen                 []string
+	Nodes                  []string
+	TLSCertificate         string
+	TLSKey                 string
+	TLSClientPems          []string
+	Updateinterval         int64
+	FullUpdateInterval     int64
+	Connections            []Connection
+	LogFile                string
+	LogLevel               string
+	LogSlowQueryThreshold  int
+	LogHugeQueryThreshold  int
+	ConnectTimeout         int
+	NetTimeout             int
+	ListenTimeout          int
+	SaveTempRequests       bool
+	ListenPrometheus       string
+	SkipSSLCheck           int
+	IdleTimeout            int64
+	IdleInterval           int64
+	StaleBackendTimeout    int
+	BackendKeepAlive       bool
+	ServiceAuthorization   string
+	GroupAuthorization     string
+	SyncIsExecuting        bool
+	CompressionMinimumSize int
+	CompressionLevel       int
 }
 
 // PeerMap contains a map of available remote peers.
@@ -117,13 +143,13 @@ var PeerMap map[string]*Peer
 var PeerMapOrder []string
 
 // PeerMapLock is the lock for the PeerMap map
-var PeerMapLock *LoggingLock
+var PeerMapLock *deadlock.RWMutex
 
 // Listeners stores if we started a listener
 var Listeners map[string]*Listener
 
 // ListenersLock is the lock for the Listeners map
-var ListenersLock *LoggingLock
+var ListenersLock *deadlock.RWMutex
 
 type configFiles []string
 
@@ -135,9 +161,11 @@ func (c *configFiles) String() string {
 // Set appends a config file to the list of config files.
 func (c *configFiles) Set(value string) (err error) {
 	_, err = os.Stat(value)
-	if err != nil {
+	// check if the file exists but skip errors for file globs
+	if err != nil && !strings.ContainsAny(value, "?*") {
 		return
 	}
+	err = nil
 	*c = append(*c, value)
 	return
 }
@@ -153,6 +181,7 @@ var flagVersion bool
 var flagLogFile string
 var flagPidfile string
 var flagProfile string
+var flagDeadlock int
 
 var once sync.Once
 var mainSignalChannel chan os.Signal
@@ -165,17 +194,17 @@ func init() {
 	InitTableNames()
 	InitObjects()
 	mainSignalChannel = make(chan os.Signal)
-	PeerMapLock = NewLoggingLock("PeerMapLock")
+	PeerMapLock = new(deadlock.RWMutex)
 	PeerMap = make(map[string]*Peer)
 	PeerMapOrder = make([]string, 0)
 	Listeners = make(map[string]*Listener)
-	ListenersLock = NewLoggingLock("ListenersLock")
+	ListenersLock = new(deadlock.RWMutex)
 	reHTTPHostPort = regexp.MustCompile("^(https?)://(.*?):(.*)")
 }
 
 func setFlags() {
-	flag.Var(&flagConfigFile, "c", "set location for config file, can be specified multiple times")
-	flag.Var(&flagConfigFile, "config", "set location for config file, can be specified multiple times")
+	flag.Var(&flagConfigFile, "c", "set location for config file, can be specified multiple times, can contain globs like lmd.ini.d/*.ini")
+	flag.Var(&flagConfigFile, "config", "set location for config file, can be specified multiple times, can contain globs like lmd.ini.d/*.ini")
 	flag.StringVar(&flagPidfile, "pidfile", "", "set path to pidfile")
 	flag.StringVar(&flagLogFile, "logfile", "", "override logfile from the configuration file")
 	flag.BoolVar(&flagVerbose, "v", false, "enable verbose output")
@@ -183,7 +212,8 @@ func setFlags() {
 	flag.BoolVar(&flagVeryVerbose, "vv", false, "enable very verbose output")
 	flag.BoolVar(&flagTraceVerbose, "vvv", false, "enable trace output")
 	flag.BoolVar(&flagVersion, "version", false, "print version and exit")
-	flag.StringVar(&flagProfile, "profiler", "", "start pprof profiler on this port, ex. :6060")
+	flag.StringVar(&flagProfile, "debug-profiler", "", "start pprof profiler on this port, ex. :6060")
+	flag.IntVar(&flagDeadlock, "debug-deadlock", 0, "enable deadlock detection with given timeout")
 }
 
 func main() {
@@ -215,7 +245,17 @@ func mainLoop(mainSignalChannel chan os.Signal) (exitCode int) {
 	setServiceAuthorization(&localConfig)
 	setGroupAuthorization(&localConfig)
 
+	CompressionLevel = localConfig.CompressionLevel
+	CompressionMinimumSize = localConfig.CompressionMinimumSize
+
+	// put some configuration settings into metrics
 	promPeerUpdateInterval.Set(float64(localConfig.Updateinterval))
+	promPeerFullUpdateInterval.Set(float64(localConfig.FullUpdateInterval))
+	promCompressionLevel.Set(float64(CompressionLevel))
+	promCompressionMinimumSize.Set(float64(CompressionMinimumSize))
+	promSyncIsExecuting.Set(float64(interface2int(localConfig.SyncIsExecuting)))
+	promSaveTempRequests.Set(float64(interface2int(localConfig.SaveTempRequests)))
+	promBackendKeepAlive.Set(float64(interface2int(localConfig.BackendKeepAlive)))
 
 	osSignalChannel := make(chan os.Signal, 1)
 	signal.Notify(osSignalChannel, syscall.SIGHUP)
@@ -256,7 +296,7 @@ func mainLoop(mainSignalChannel chan os.Signal) (exitCode int) {
 	once.Do(PrintVersion)
 
 	// just wait till someone hits ctrl+c or we have to reload
-	statsTimer := time.NewTicker(30 * time.Second)
+	statsTimer := time.NewTicker(StatsTimerInterval)
 	for {
 		select {
 		case sig := <-osSignalChannel:
@@ -335,7 +375,7 @@ func initializePeers(localConfig *Config, waitGroupPeers *sync.WaitGroup, waitGr
 		}
 		if !found {
 			PeerMap[id].Stop()
-			PeerMap[id].ClearLocked()
+			PeerMap[id].Clear(true)
 			PeerMapRemove(id)
 		}
 	}
@@ -397,11 +437,11 @@ func checkFlags() {
 	flag.Parse()
 	if flagVersion {
 		fmt.Printf("%s - version %s\n", NAME, Version())
-		os.Exit(2)
+		os.Exit(ExitCritical)
 	}
 
 	if flagProfile != "" {
-		runtime.SetBlockProfileRate(10)
+		runtime.SetBlockProfileRate(BlockProfileRateInterval)
 		go func() {
 			// make sure we log panics properly
 			defer logPanicExit()
@@ -409,9 +449,17 @@ func checkFlags() {
 		}()
 	}
 
+	if flagDeadlock <= 0 {
+		deadlock.Opts.Disable = true
+	} else {
+		deadlock.Opts.Disable = false
+		deadlock.Opts.DeadlockTimeout = time.Duration(flagDeadlock) * time.Second
+		deadlock.Opts.LogBuf = NewLogWriter("Error")
+	}
+
 	if len(flagConfigFile) == 0 {
 		fmt.Print("ERROR: no config files specified.\nSee --help for all options.\n")
-		os.Exit(2)
+		os.Exit(ExitCritical)
 	}
 
 	createPidFile(flagPidfile)
@@ -428,7 +476,7 @@ func createPidFile(path string) {
 			if process, err := os.FindProcess(pid); err == nil {
 				if err := process.Signal(syscall.Signal(0)); err == nil {
 					fmt.Fprintf(os.Stderr, "ERROR: lmd already running: %d\n", pid)
-					os.Exit(2)
+					os.Exit(ExitCritical)
 				}
 			}
 		}
@@ -437,7 +485,7 @@ func createPidFile(path string) {
 	err := ioutil.WriteFile(path, []byte(fmt.Sprintf("%d\n", os.Getpid())), 0664)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "ERROR: Could not write pidfile: %s\n", err.Error())
-		os.Exit(2)
+		os.Exit(ExitCritical)
 	}
 }
 
@@ -477,8 +525,22 @@ func NewLMDHTTPClient(tlsConfig *tls.Config, proxy string) *http.Client {
 		tr.Proxy = http.ProxyURL(proxyURL)
 	}
 	netClient := &http.Client{
-		Timeout:   time.Second * 30,
+		Timeout:   HTTPClientTimeout,
 		Transport: tr,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if strings.Contains(req.URL.RawQuery, "/omd/error.py%3fcode=500") {
+				log.Warnf("HTTP request redirected to %s which indicates an internal error in the backend", req.URL.String())
+				return http.ErrUseLastResponse
+			}
+			if strings.Contains(req.URL.Path, "/thruk/cgi-bin/login.cgi") {
+				log.Warnf("HTTP request redirected to %s, this indicates an issue with authentication", req.URL.String())
+				return http.ErrUseLastResponse
+			}
+			if len(via) >= 10 {
+				return errors.New("stopped after 10 redirects")
+			}
+			return nil
+		},
 	}
 	return netClient
 }
@@ -517,30 +579,12 @@ func mainSignalHandler(sig os.Signal, shutdownChannel chan bool, waitGroupPeers 
 		return (-1)
 	case syscall.SIGUSR1:
 		log.Errorf("requested thread dump via signal %s", sig)
-		logCurrentsLocks()
 		logThreaddump()
 		return (0)
 	default:
 		log.Warnf("Signal not handled: %v", sig)
 	}
 	return (1)
-}
-
-func logCurrentsLocks() {
-	log.Errorf("*** current held locks:")
-	PeerMapLock.RLock()
-	for id := range PeerMap {
-		p := PeerMap[id]
-		if atomic.LoadInt32(&p.PeerLock.currentlyLocked) == 0 {
-			log.Errorf("[%s] peer holding peer lock:", p.Name)
-			LogCaller(log.Errorf, p.PeerLock.currentLockpointer.Load().(*[]uintptr))
-		}
-		if atomic.LoadInt32(&p.DataLock.currentlyLocked) == 0 {
-			log.Errorf("[%s] peer holding data lock:", p.Name)
-			LogCaller(log.Errorf, p.DataLock.currentLockpointer.Load().(*[]uintptr))
-		}
-	}
-	PeerMapLock.RUnlock()
 }
 
 func logThreaddump() {
@@ -596,31 +640,40 @@ func setDefaults(conf *Config) {
 	if conf.StaleBackendTimeout <= 0 {
 		conf.StaleBackendTimeout = 30
 	}
+	if conf.LogSlowQueryThreshold <= 0 {
+		conf.LogSlowQueryThreshold = 5
+	}
+	if conf.LogHugeQueryThreshold <= 0 {
+		conf.LogHugeQueryThreshold = 100
+	}
+	if conf.CompressionMinimumSize <= 0 {
+		conf.CompressionMinimumSize = 500
+	}
 }
 
 func setServiceAuthorization(conf *Config) {
 	ServiceAuth := strings.ToLower(conf.ServiceAuthorization)
 	switch {
-	case ServiceAuth == loose, ServiceAuth == strict:
+	case ServiceAuth == AuthLoose, ServiceAuth == AuthStrict:
 		conf.ServiceAuthorization = ServiceAuth
 	case ServiceAuth != "":
 		log.Warnf("Invalid ServiceAuthorization: %s, using loose", conf.ServiceAuthorization)
-		conf.ServiceAuthorization = loose
+		conf.ServiceAuthorization = AuthLoose
 	default:
-		conf.ServiceAuthorization = loose
+		conf.ServiceAuthorization = AuthLoose
 	}
 }
 
 func setGroupAuthorization(conf *Config) {
 	GroupAuth := strings.ToLower(conf.GroupAuthorization)
 	switch {
-	case GroupAuth == loose, GroupAuth == strict:
+	case GroupAuth == AuthLoose, GroupAuth == AuthStrict:
 		conf.GroupAuthorization = GroupAuth
 	case GroupAuth != "":
 		log.Warnf("Invalid GroupAuthorization: %s, using strict", conf.GroupAuthorization)
-		conf.GroupAuthorization = strict
+		conf.GroupAuthorization = AuthStrict
 	default:
-		conf.GroupAuthorization = strict
+		conf.GroupAuthorization = AuthStrict
 	}
 }
 
@@ -634,17 +687,33 @@ func PrintVersion() {
 func ReadConfig(files []string) *Config {
 	// combine listeners from all files
 	allListeners := make([]string, 0)
-	conf := &Config{BackendKeepAlive: true}
-	for _, configFile := range files {
-		if _, err := os.Stat(configFile); err != nil {
-			fmt.Fprintf(os.Stderr, "ERROR: could not load configuration from %s: %s\nuse --help to see all options.\n", configFile, err.Error())
-			os.Exit(3)
+	conf := &Config{
+		BackendKeepAlive:       true,
+		SaveTempRequests:       true,
+		CompressionLevel:       -1,
+		CompressionMinimumSize: DefaultCompressionMinimumSize,
+	}
+	for _, pattern := range files {
+		configFiles, errGlob := filepath.Glob(pattern)
+		if errGlob != nil {
+			fmt.Fprintf(os.Stderr, "ERROR: config file pattern %s is invalid: %s\n", pattern, errGlob.Error())
+			os.Exit(ExitUnknown)
 		}
-		if _, err := toml.DecodeFile(configFile, &conf); err != nil {
-			panic(err)
+		if configFiles == nil {
+			log.Debugf("config file pattern %s did not match any files", pattern)
+			continue
 		}
-		allListeners = append(allListeners, conf.Listen...)
-		conf.Listen = []string{}
+		for _, configFile := range configFiles {
+			if _, err := os.Stat(configFile); err != nil {
+				fmt.Fprintf(os.Stderr, "ERROR: could not load configuration from %s: %s\nuse --help to see all options.\n", configFile, err.Error())
+				os.Exit(ExitUnknown)
+			}
+			if _, err := toml.DecodeFile(configFile, &conf); err != nil {
+				panic(err)
+			}
+			allListeners = append(allListeners, conf.Listen...)
+			conf.Listen = []string{}
+		}
 	}
 	if flagLogFile != "" {
 		conf.LogFile = flagLogFile
@@ -668,7 +737,7 @@ func logPanicExit() {
 		log.Errorf("Version: %s", Version())
 		log.Errorf("%s", debug.Stack())
 		deletePidFile(flagPidfile)
-		os.Exit(1)
+		os.Exit(ExitCritical)
 	}
 }
 

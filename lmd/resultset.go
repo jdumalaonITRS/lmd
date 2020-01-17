@@ -11,9 +11,17 @@ func (res *ResultSet) Precompress(offset int, columns *ColumnList) {
 	for i := range *columns {
 		col := (*columns)[i]
 		if col.DataType == StringLargeCol {
+			replaceIndex := i + offset
 			for j := range *res {
-				(*res)[j][i+offset] = interface2stringlarge((*res)[j][i+offset])
+				(*res)[j][replaceIndex] = interface2stringlarge((*res)[j][replaceIndex])
 			}
 		}
 	}
+}
+
+// ResultPreparedSet is a list of result rows prepared to insert faster
+type ResultPrepared struct {
+	ResultRow  *[]interface{}
+	DataRow    *DataRow
+	FullUpdate bool
 }

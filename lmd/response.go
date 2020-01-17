@@ -12,17 +12,18 @@ import (
 	"time"
 
 	jsoniter "github.com/json-iterator/go"
+	"github.com/sasha-s/go-deadlock"
 )
 
 // Response contains the livestatus response data as long with some meta data
 type Response struct {
 	noCopy      noCopy
-	Lock        *LoggingLock  // must be used for Result and Failed access
-	Request     *Request      // the initial request
-	Result      ResultSet     // final processed result table
-	Code        int           // 200 if the query was successful
-	Error       error         // error object if the query was not successful
-	RawResults  *RawResultSet // collected results from peers
+	Lock        *deadlock.RWMutex // must be used for Result and Failed access
+	Request     *Request          // the initial request
+	Result      ResultSet         // final processed result table
+	Code        int               // 200 if the query was successful
+	Error       error             // error object if the query was not successful
+	RawResults  *RawResultSet     // collected results from peers
 	ResultTotal int
 	Failed      map[string]string
 }
@@ -34,7 +35,7 @@ func NewResponse(req *Request) (res *Response, err error) {
 		Code:    200,
 		Failed:  req.BackendErrors,
 		Request: req,
-		Lock:    NewLoggingLock("ResponseLock"),
+		Lock:    new(deadlock.RWMutex),
 	}
 	if res.Failed == nil {
 		res.Failed = make(map[string]string)
@@ -126,8 +127,8 @@ func (res *Response) Less(i, j int) bool {
 		case Int64Col:
 			fallthrough
 		case FloatCol:
-			valueA := res.Result[i][s.Index].(float64)
-			valueB := res.Result[j][s.Index].(float64)
+			valueA := interface2float64(res.Result[i][s.Index])
+			valueB := interface2float64(res.Result[j][s.Index])
 			if valueA == valueB {
 				continue
 			}
@@ -140,8 +141,8 @@ func (res *Response) Less(i, j int) bool {
 			if s.Group {
 				index = 0
 			}
-			s1 := *(res.Result[i][index].(*string))
-			s2 := *(res.Result[j][index].(*string))
+			s1 := *interface2stringNoDedup(res.Result[i][index])
+			s2 := *interface2stringNoDedup(res.Result[j][index])
 			if s1 == s2 {
 				continue
 			}
@@ -156,8 +157,8 @@ func (res *Response) Less(i, j int) bool {
 			// not implemented
 			return s.Direction == Asc
 		case HashMapCol:
-			s1 := (res.Result[i][s.Index]).(map[string]string)[s.Args]
-			s2 := (res.Result[j][s.Index]).(map[string]string)[s.Args]
+			s1 := interface2hashmap(res.Result[i][s.Index])[s.Args]
+			s2 := interface2hashmap(res.Result[j][s.Index])[s.Args]
 			if s1 == s2 {
 				continue
 			}
@@ -262,9 +263,12 @@ func (res *Response) CalculateFinalStats() {
 		rowSize += hasColumns
 		res.Result[j] = make([]interface{}, rowSize)
 		if hasColumns > 0 {
-			parts := strings.Split(key, ";")
+			parts := strings.Split(key, ListSepChar1)
 			for i := range parts {
 				res.Result[j][i] = &parts[i]
+				if i >= hasColumns {
+					break
+				}
 			}
 		}
 		for i := range stats {
@@ -324,7 +328,7 @@ func (res *Response) Send(c net.Conn) (size int64, err error) {
 	}
 	size = int64(resBuffer.Len()) + 1
 	if res.Request.ResponseFixed16 {
-		if log.IsV(3) {
+		if log.IsV(LogVerbosityTrace) {
 			log.Tracef("write: %s", fmt.Sprintf("%d %11d", res.Code, size))
 		}
 		_, err = c.Write([]byte(fmt.Sprintf("%d %11d\n", res.Code, size)))
@@ -333,7 +337,7 @@ func (res *Response) Send(c net.Conn) (size int64, err error) {
 			return
 		}
 	}
-	if log.IsV(3) {
+	if log.IsV(LogVerbosityTrace) {
 		log.Tracef("write: %s", resBuffer.Bytes())
 	}
 	written, err := resBuffer.WriteTo(c)

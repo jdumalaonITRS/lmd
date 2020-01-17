@@ -25,6 +25,7 @@ EXTERNAL_DEPS = \
 	golang.org/x/tools/cmd/stringer \
 	github.com/json-iterator/go \
 	github.com/lkarlslund/stringdedup \
+	github.com/sasha-s/go-deadlock \
 
 
 all: deps fmt build
@@ -110,7 +111,7 @@ benchmark: fmt
 	cd $(LAMPDDIR) && go test -ldflags "-s -w -X main.Build=$(shell git rev-parse --short HEAD)" -v -bench=B\* -run=^$$ . -benchmem
 
 racetest: fmt
-	cd $(LAMPDDIR) && go test -race -v
+	cd $(LAMPDDIR) && go test -race -short -v
 
 covertest: fmt
 	cd $(LAMPDDIR) && go test -v -coverprofile=cover.out

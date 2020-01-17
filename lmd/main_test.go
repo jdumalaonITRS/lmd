@@ -145,6 +145,7 @@ func TestAllOps(t *testing.T) {
 			for _, value := range values {
 				testqueryCol(t, peer, col.Table.Name, col.Name)
 				testqueryFilter(t, peer, col.Table.Name, col.Name, op, value)
+				testqueryGroup(t, peer, col.Table.Name, col.Name, op, value)
 			}
 		}
 	}
@@ -203,6 +204,30 @@ func testqueryFilter(t *testing.T, peer *Peer, table TableName, column, op, valu
 	peer.QueryString(query)
 }
 
+func testqueryGroup(t *testing.T, peer *Peer, table TableName, column, op, value string) {
+	query := fmt.Sprintf("GET %s\nColumns: %s\nStats: %s %s%s\n\n",
+		table.String(),
+		column,
+		column,
+		op,
+		value,
+	)
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Println("Recovered in f", r)
+			t.Fatalf("paniced for query:\n%s", query)
+		}
+	}()
+	buf := bufio.NewReader(bytes.NewBufferString(query))
+	req, _, err := NewRequest(buf)
+	if err == nil {
+		if err = assertEq(query, req.String()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	peer.QueryString(query)
+}
+
 func TestAllTables(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping all ops test in short mode")
@@ -235,8 +260,8 @@ func TestAllTables(t *testing.T) {
 func TestMainConfig(t *testing.T) {
 	testConfig := []string{
 		`Loglevel = "Warn"`,
-		`Listen = ["test1.sock"]`,
-		`Listen = ["test2.sock"]`,
+		"Listen = [\"test1.sock\"]\nSkipSSLCheck = 1",
+		"Listen = [\"test2.sock\"]\nSkipSSLCheck = 0",
 	}
 
 	ioutil.WriteFile("test1.ini", []byte(testConfig[0]), 0644)
@@ -252,9 +277,15 @@ func TestMainConfig(t *testing.T) {
 	if err := assertEq(len(conf.Listen), 1); err != nil {
 		t.Error(err)
 	}
+	if err := assertEq(conf.SkipSSLCheck, 1); err != nil {
+		t.Error(err)
+	}
 
 	conf = ReadConfig([]string{"test1.ini", "test2.ini", "test3.ini"})
 	if err := assertEq(len(conf.Listen), 2); err != nil {
+		t.Error(err)
+	}
+	if err := assertEq(conf.SkipSSLCheck, 0); err != nil {
 		t.Error(err)
 	}
 
