@@ -8,6 +8,7 @@ ExecStartPost=/bin/sleep 4
 ExecStartPost=/bin/chmod 660 /opt/monitor/var/rw/live
 Restart=always
 User=monitor
+Group=apache
 
 [Install]
 WantedBy=multi-user.target
