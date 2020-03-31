@@ -1,9 +1,11 @@
 post:
   install:
-    - golang
+    - curl
+    - tar
   steps: |
     export GOPATH=/root/go
     export GOBIN=$GOPATH/bin
-    go get -u golang.org/x/lint/golint
-    go get -u golang.org/x/tools/cmd/goimports
+    curl -o /tmp/go1.14.1.linux-amd64.tar.gz https://dl.google.com/go/go1.14.1.linux-amd64.tar.gz
+    tar -xf /tmp/go1.14.1.linux-amd64.tar.gz -C /root/
+    export PATH=/root/go/bin/:$PATH
     make citest

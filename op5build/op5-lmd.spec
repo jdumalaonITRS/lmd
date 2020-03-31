@@ -15,7 +15,6 @@ BuildRoot:	%{_tmppath}/%{name}-%{version}
 BuildRequires: systemd
 BuildRequires: git
 %endif
-BuildRequires: golang
 Requires: op5-naemon
 Requires: monitor-livestatus
 
@@ -26,6 +25,10 @@ This package configures lmd integration with OP5 monitor
 %setup -q
 
 %build
+# LMD requires Golang 1.14, which is not yet in EPEL
+# We manually download it for now
+curl -o go1.14.1.linux-amd64.tar.gz https://dl.google.com/go/go1.14.1.linux-amd64.tar.gz
+tar -xf go1.14.1.linux-amd64.tar.gz -C $HOME/
 # make sure the default golang bin is in our path
 export PATH=$PATH:$HOME/go/bin/
 make all
