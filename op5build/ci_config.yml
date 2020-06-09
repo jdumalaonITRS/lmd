@@ -8,4 +8,6 @@ post:
     curl -o /tmp/go1.14.1.linux-amd64.tar.gz https://dl.google.com/go/go1.14.1.linux-amd64.tar.gz
     tar -xf /tmp/go1.14.1.linux-amd64.tar.gz -C /root/
     export PATH=/root/go/bin/:$PATH
-    make citest
+    make test
+    make benchmark
+    make racetest
