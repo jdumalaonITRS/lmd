@@ -21,6 +21,15 @@ Requires: monitor-livestatus
 %description
 This package configures lmd integration with OP5 monitor
 
+%package debug
+Summary: OP5 monitor lmd integration (debug)
+Requires: op5-naemon
+Requires: monitor-livestatus
+Requires: op5-lmd
+
+%description debug
+Build with debug symbols for the lmd integration in OP5 Monitor
+
 %prep
 %setup -q
 
@@ -31,6 +40,8 @@ curl -o go1.14.1.linux-amd64.tar.gz https://dl.google.com/go/go1.14.1.linux-amd6
 tar -xf go1.14.1.linux-amd64.tar.gz -C $HOME/
 # make sure the default golang bin is in our path
 export PATH=$PATH:$HOME/go/bin/
+make debugbuild
+mv lmd/lmd lmd/lmd_debugbuild
 make all
 
 %pre
@@ -48,6 +59,7 @@ rm -rf %buildroot
 # copy LMD binary to /usr/bin/
 mkdir -p %buildroot/%_bindir/
 cp -f lmd/lmd %buildroot/%_bindir/
+cp -f lmd/lmd_debugbuild %buildroot/%_bindir/
 
 # config file
 mkdir -p %buildroot%_sysconfdir/op5/lmd/
@@ -60,6 +72,7 @@ cp -rf op5build/lmd.ini %buildroot%_sysconfdir/op5/lmd/
 %else
 	mkdir --parents %{buildroot}%{_unitdir}
 	cp op5build/lmd.service %{buildroot}%{_unitdir}/lmd.service
+	cp op5build/lmd-debug.service %{buildroot}%{_unitdir}/lmd-debug.service
 %endif
 
 # logrotation
@@ -82,6 +95,27 @@ systemctl daemon-reload
 systemctl enable lmd.service
 systemctl restart lmd
 %endif
+
+%post debug
+systemctl stop lmd
+mv %_unitdir/lmd.service %_unitdir/lmd-release.service
+ln -s %_unitdir/lmd-debug.service %_unitdir/lmd.service
+systemctl daemon-reload
+systemctl start lmd
+
+%preun debug
+# Only run when deleting the package completly, not when updating
+if [ "$1" -eq 0 ] ; then
+	systemctl stop lmd
+	# make sure we are acually using the debug version by verifying the lmd.service
+	# file is a symlink.
+	if [ -L %_unitdir/lmd.service ]; then
+		rm -f %_unitdir/lmd.service
+		mv %_unitdir/lmd-release.service %_unitdir/lmd.service
+	fi
+	systemctl daemon-reload
+	systemctl start lmd
+fi
 
 %preun
 if [ "$1" -eq 0 ]; then
@@ -111,6 +145,10 @@ fi
 %doc README.md
 %dir %attr(775,monitor,apache) /var/log/op5
 %attr(644,monitor,apache) %ghost /var/log/op5/lmd.log
+
+%files debug
+%attr(755,root,root) %_bindir/lmd_debugbuild
+%attr(664,root,root) %{_unitdir}/lmd-debug.service
 
 %clean
 rm -rf %buildroot

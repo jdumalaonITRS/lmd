@@ -1,0 +1,14 @@
+[Unit]
+Description=op5 lmd integration
+After=syslog.target network.target naemon.service
+
+[Service]
+ExecStart=/usr/bin/lmd_debugbuild --config=/etc/op5/lmd/lmd.ini --logfile=/var/log/op5/lmd.log -debug-deadlock=30 &
+ExecStartPost=/bin/sleep 4
+ExecStartPost=/bin/chmod 660 /opt/monitor/var/rw/live
+Restart=always
+User=monitor
+Group=apache
+
+[Install]
+WantedBy=multi-user.target
