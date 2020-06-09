@@ -1,5 +1,6 @@
 %define not_systemd (0%{?fedora} && 0%{?fedora} < 18) || (0%{?rhel} && 0%{?rhel} < 7)
 %global debug_package %{nil}
+%global golang_version 1.14.4
 
 Name:		op5-lmd
 Version:	%{op5version}
@@ -36,8 +37,8 @@ Build with debug symbols for the lmd integration in OP5 Monitor
 %build
 # LMD requires Golang 1.14, which is not yet in EPEL
 # We manually download it for now
-curl -o go1.14.1.linux-amd64.tar.gz https://dl.google.com/go/go1.14.1.linux-amd64.tar.gz
-tar -xf go1.14.1.linux-amd64.tar.gz -C $HOME/
+curl -o go%{golang_version}.linux-amd64.tar.gz https://dl.google.com/go/go%{golang_version}.linux-amd64.tar.gz
+tar -xf go%{golang_version}.linux-amd64.tar.gz -C $HOME/
 # make sure the default golang bin is in our path
 export PATH=$PATH:$HOME/go/bin/
 make debugbuild
