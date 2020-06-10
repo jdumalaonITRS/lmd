@@ -720,7 +720,7 @@ func (p *Peer) InitAllTables() bool {
 	}
 
 	p.DataLock.RLock()
-	if len(p.Tables[TableStatus].Data) == 0 {
+	if _, ok := p.Tables[TableStatus]; ok && len(p.Tables[TableStatus].Data) == 0 {
 		// not ready yet
 		p.DataLock.RUnlock()
 		return false
@@ -810,8 +810,12 @@ func (p *Peer) UpdateDelta(from, to int64) bool {
 		return p.InitAllTables()
 	}
 	filterStr := ""
-	if from > 0 && p.HasFlag(HasLastUpdateColumn) {
-		filterStr = fmt.Sprintf("Filter: last_update >= %v\nFilter: last_update < %v\nAnd: 2\n", from, to)
+	if from > 0 {
+		if p.HasFlag(HasLMDLastCacheUpdateColumn) {
+			filterStr = fmt.Sprintf("Filter: lmd_last_cache_update >= %v\nFilter: lmd_last_cache_update < %v\nAnd: 2\n", from, to)
+		} else if p.HasFlag(HasLastUpdateColumn) {
+			filterStr = fmt.Sprintf("Filter: last_update >= %v\nFilter: last_update < %v\nAnd: 2\n", from, to)
+		}
 	}
 	if err == nil {
 		err = p.UpdateDeltaHosts(filterStr)
@@ -1577,6 +1581,7 @@ func (p *Peer) GetConnection() (conn net.Conn, connType PeerConnType, err error)
 			uri, uErr := url.Parse(peerAddr)
 			if uErr != nil {
 				err = uErr
+				return
 			}
 			host := uri.Host
 			if !strings.Contains(host, ":") {
@@ -1822,6 +1827,12 @@ func (p *Peer) checkAvailableTables() (err error) {
 		if _, ok := availableTables[TableHosts]["depends_exec"]; ok {
 			log.Debugf("[%s] remote connection supports dependency columns", p.Name)
 			p.SetFlag(HasDependencyColumn)
+		}
+	}
+	if !p.HasFlag(HasLMDLastCacheUpdateColumn) {
+		if _, ok := availableTables[TableHosts]["lmd_last_cache_update"]; ok {
+			log.Debugf("[%s] remote connection supports lmd_last_cache_update columns", p.Name)
+			p.SetFlag(HasLMDLastCacheUpdateColumn)
 		}
 	}
 	if !p.HasFlag(HasLastUpdateColumn) {
@@ -2712,7 +2723,6 @@ func (p *Peer) getTLSClientConfig() (*tls.Config, error) {
 		caCertPool := x509.NewCertPool()
 		caCertPool.AppendCertsFromPEM(caCert)
 		config.RootCAs = caCertPool
-		config.BuildNameToCertificate()
 	}
 
 	return config, nil

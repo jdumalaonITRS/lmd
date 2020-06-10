@@ -7,38 +7,26 @@ GOVERSION:=$(shell \
     go version | \
     awk -F'go| ' '{ split($$5, a, /\./); printf ("%04d%04d", a[1], a[2]); exit; }' \
 )
-MINGOVERSION:=00010010
-MINGOVERSIONSTR:=1.10
+MINGOVERSION:=00010014
+MINGOVERSIONSTR:=1.14
 
-EXTERNAL_DEPS = \
-	github.com/BurntSushi/toml \
-	github.com/kdar/factorlog \
-	github.com/prometheus/client_golang/prometheus \
-	github.com/prometheus/client_golang/prometheus/promhttp \
-	github.com/buger/jsonparser \
-	github.com/a8m/djson \
-	github.com/julienschmidt/httprouter \
-	github.com/davecgh/go-spew/spew \
-	golang.org/x/tools/cmd/goimports \
-	github.com/jmhodges/copyfighter \
-	github.com/golangci/golangci-lint/cmd/golangci-lint \
-	golang.org/x/tools/cmd/stringer \
-	github.com/json-iterator/go \
-	github.com/lkarlslund/stringdedup \
-	github.com/sasha-s/go-deadlock \
+.PHONY: vendor
 
+all: fmt build
 
-all: deps fmt build
-
-deps: versioncheck dump
-	set -e; for DEP in $(EXTERNAL_DEPS); do \
+tools: versioncheck dump
+	go mod download
+	set -e; for DEP in $(shell grep _ buildtools/tools.go | awk '{ print $$2 }'); do \
 		go get $$DEP; \
 	done
+	go mod tidy
 
 updatedeps: versioncheck
-	set -e; for DEP in $(EXTERNAL_DEPS); do \
-		go get -u $$DEP; \
-	done
+	go list -u -m all
+	go mod tidy
+
+vendor:
+	go mod vendor
 
 dump:
 	if [ $(shell grep -rc Dump $(LAMPDDIR)/*.go | grep -v :0 | grep -v $(LAMPDDIR)/dump.go | wc -l) -ne 0 ]; then \
@@ -54,7 +42,7 @@ build: dump
 build-linux-amd64: dump
 	cd $(LAMPDDIR) && GOOS=linux GOARCH=amd64 go build -ldflags "-s -w -X main.Build=$(shell git rev-parse --short HEAD)" -o lmd.linux.amd64
 
-debugbuild: deps fmt
+debugbuild: fmt
 	cd $(LAMPDDIR) && go build -race -ldflags "-X main.Build=$(shell git rev-parse --short HEAD)"
 
 test: fmt dump
@@ -67,7 +55,7 @@ longtest: fmt dump
 	cd $(LAMPDDIR) && go test -v | ../t/test_counter.sh
 	rm -f lmd/mock*.sock
 
-citest: deps
+citest:
 	rm -f lmd/mock*.sock
 	#
 	# Checking gofmt errors
@@ -106,6 +94,7 @@ citest: deps
 	#
 	# All CI tests successfull
 	#
+	go mod tidy
 
 benchmark: fmt
 	cd $(LAMPDDIR) && go test -ldflags "-s -w -X main.Build=$(shell git rev-parse --short HEAD)" -v -bench=B\* -run=^$$ . -benchmem
@@ -128,13 +117,15 @@ clean:
 	rm -f $(LAMPDDIR)/coverage.html
 	rm -f $(LAMPDDIR)/*.sock
 	rm -f lmd-*.html
+	rm -rf vendor
 
-fmt: generate
+fmt: generate tools
 	cd $(LAMPDDIR) && goimports -w .
 	cd $(LAMPDDIR) && go vet -all -assign -atomic -bool -composites -copylocks -nilfunc -rangeloops -unsafeptr -unreachable .
 	cd $(LAMPDDIR) && gofmt -w -s .
 
-generate:
+generate: tools
+	go get -u golang.org/x/tools/cmd/stringer
 	cd $(LAMPDDIR) && go generate
 
 versioncheck:
@@ -145,23 +136,19 @@ versioncheck:
 		exit 1; \
 	}
 
-copyfighter:
+copyfighter: tools
 	#
 	# Check if there are values better passed as pointer
 	# See https://github.com/jmhodges/copyfighter
 	#
-	cd $(LAMPDDIR) && copyfighter .
+	#cd $(LAMPDDIR) && copyfighter .
 
-golangci:
+golangci: tools
 	#
 	# golangci combines a few static code analyzer
 	# See https://github.com/golangci/golangci-lint
 	#
-	@if [ $$( printf '%s\n' $(GOVERSION) 00010010 | sort -n | head -n 1 ) != 00010010 ]; then \
-		echo "golangci requires at least go 1.10"; \
-	else \
-		golangci-lint run $(LAMPDDIR)/...; \
-	fi
+	golangci-lint run $(LAMPDDIR)/...
 
 version:
 	OLDVERSION="$(shell grep "VERSION =" $(LAMPDDIR)/main.go | awk '{print $$3}' | tr -d '"')"; \
