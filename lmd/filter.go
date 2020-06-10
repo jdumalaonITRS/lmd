@@ -60,6 +60,9 @@ type Filter struct {
 	Stats      float64
 	StatsCount int
 	StatsType  StatsType
+
+	// copy of Column.Optional
+	ColumnOptional OptionalFlags
 }
 
 // Operator defines a filter operator.
@@ -80,6 +83,12 @@ const (
 	RegexMatchNot       // !~
 	RegexNoCaseMatch    // ~~
 	RegexNoCaseMatchNot // !~~
+
+	// String Matching
+	Contains          // internal only
+	ContainsNot       // internal only
+	ContainsNoCase    // internal only
+	ContainsNoCaseNot // internal only
 
 	// Numeric
 	Less        // <
@@ -109,6 +118,14 @@ func (op *Operator) String() string {
 	case RegexNoCaseMatch:
 		return ("~~")
 	case RegexNoCaseMatchNot:
+		return ("!~~")
+	case Contains:
+		return ("~")
+	case ContainsNot:
+		return ("!~")
+	case ContainsNoCase:
+		return ("~~")
+	case ContainsNoCaseNot:
 		return ("!~~")
 	case Less:
 		return ("<")
@@ -140,16 +157,19 @@ func (f *Filter) String(prefix string) (str string) {
 		strVal = " " + strVal
 	}
 
+	// trim lower case columns prefix, they are used internally only
+	colName := strings.TrimSuffix(f.Column.Name, "_lc")
+
 	switch f.StatsType {
 	case NoStats:
 		if prefix == "" {
 			prefix = "Filter"
 		}
-		str = fmt.Sprintf("%s: %s %s%s\n", prefix, f.Column.Name, f.Operator.String(), strVal)
+		str = fmt.Sprintf("%s: %s %s%s\n", prefix, colName, f.Operator.String(), strVal)
 	case Counter:
-		str = fmt.Sprintf("Stats: %s %s%s\n", f.Column.Name, f.Operator.String(), strVal)
+		str = fmt.Sprintf("Stats: %s %s%s\n", colName, f.Operator.String(), strVal)
 	default:
-		str = fmt.Sprintf("Stats: %s %s\n", f.StatsType.String(), f.Column.Name)
+		str = fmt.Sprintf("Stats: %s %s\n", f.StatsType.String(), colName)
 	}
 	if f.Negate {
 		str += fmt.Sprintf("%s\n", "Negate:")
@@ -216,7 +236,7 @@ func (f *Filter) ApplyValue(val float64, count int) {
 
 // ParseFilter parses a single line into a filter object.
 // It returns any error encountered.
-func ParseFilter(value []byte, table TableName, stack *[]*Filter) (err error) {
+func ParseFilter(value []byte, table TableName, stack *[]*Filter, options ParseOptions) (err error) {
 	tmp := bytes.SplitN(value, []byte(" "), 3)
 	if len(tmp) < 2 {
 		err = errors.New("filter header must be Filter: <field> <operator> <value>")
@@ -247,20 +267,50 @@ func ParseFilter(value []byte, table TableName, stack *[]*Filter) (err error) {
 		return
 	}
 
+	if options&ParseOptimize != 0 {
+		filter.setLowerCaseColumn()
+	}
+
 	if isRegex {
-		val := filter.StrValue
-		if op == RegexNoCaseMatchNot || op == RegexNoCaseMatch {
-			val = "(?i)" + val
-		}
-		regex, rerr := regexp.Compile(val)
-		if rerr != nil {
-			err = errors.New("invalid regular expression: " + rerr.Error())
+		err = filter.setRegexFilter(options)
+		if err != nil {
 			return
 		}
-		filter.Regexp = regex
 	}
+
+	filter.ColumnOptional = col.Optional
+
 	*stack = append(*stack, filter)
 	return
+}
+
+// setFilterValue converts the text value into the given filters type value
+func (f *Filter) setRegexFilter(options ParseOptions) error {
+	val := f.StrValue
+	if options&ParseOptimize != 0 && !hasRegexpCharacters(val) {
+		switch f.Operator {
+		case RegexMatch:
+			f.Operator = Contains
+		case RegexMatchNot:
+			f.Operator = ContainsNot
+		case RegexNoCaseMatch:
+			f.Operator = ContainsNoCase
+			f.StrValue = strings.ToLower(val)
+		case RegexNoCaseMatchNot:
+			f.Operator = ContainsNoCaseNot
+			f.StrValue = strings.ToLower(val)
+		}
+	} else {
+		if f.Operator == RegexNoCaseMatchNot || f.Operator == RegexNoCaseMatch {
+			val = "(?i)" + val
+		}
+		regex, err := regexp.Compile(val)
+		if err != nil {
+			return errors.New("invalid regular expression: " + err.Error())
+		}
+		f.Regexp = regex
+	}
+	return nil
 }
 
 // setFilterValue converts the text value into the given filters type value
@@ -317,6 +367,37 @@ func (f *Filter) setFilterValue(strVal string) (err error) {
 	return
 }
 
+// setLowerCaseColumn tries to use the lowercase column if possible
+func (f *Filter) setLowerCaseColumn() {
+	col := f.Column
+	table := col.Table
+	// only hosts and services tables have lower case cache fields
+	if table.Name != TableHosts && table.Name != TableServices {
+		return
+	}
+	// lower case fields will only be used for case-insensitive operators
+	var op Operator
+	switch f.Operator {
+	default:
+		return
+	case ContainsNoCase:
+		op = Contains
+	case ContainsNoCaseNot:
+		op = ContainsNot
+	case RegexNoCaseMatch:
+		op = RegexMatch
+	case RegexNoCaseMatchNot:
+		op = RegexMatchNot
+	}
+	col, ok := table.ColumnsIndex[col.Name+"_lc"]
+	if !ok {
+		return
+	}
+	f.Column = col
+	f.Operator = op
+	f.StrValue = strings.ToLower(f.StrValue)
+}
+
 func parseFilterOp(in []byte) (op Operator, isRegex bool, err error) {
 	isRegex = false
 	switch string(in) {
@@ -363,6 +444,18 @@ func parseFilterOp(in []byte) (op Operator, isRegex bool, err error) {
 	case "!>=":
 		op = GroupContainsNot
 		return
+	case "like":
+		op = Contains
+		return
+	case "unlike":
+		op = ContainsNot
+		return
+	case "ilike":
+		op = ContainsNoCase
+		return
+	case "iunlike":
+		op = ContainsNoCaseNot
+		return
 	}
 	err = fmt.Errorf("unrecognized filter operator: %s", in)
 	return
@@ -370,7 +463,7 @@ func parseFilterOp(in []byte) (op Operator, isRegex bool, err error) {
 
 // ParseStats parses a text line into a stats object.
 // It returns any error encountered.
-func ParseStats(value []byte, table TableName, stack *[]*Filter) (err error) {
+func ParseStats(value []byte, table TableName, stack *[]*Filter, options ParseOptions) (err error) {
 	tmp := bytes.SplitN(value, []byte(" "), 2)
 	if len(tmp) < 2 {
 		err = fmt.Errorf("stats header, must be Stats: <field> <operator> <value> OR Stats: <sum|avg|min|max> <field>")
@@ -389,7 +482,7 @@ func ParseStats(value []byte, table TableName, stack *[]*Filter) (err error) {
 	case "sum":
 		op = Sum
 	default:
-		err = ParseFilter(value, table, stack)
+		err = ParseFilter(value, table, stack, options)
 		if err != nil {
 			return
 		}
@@ -456,8 +549,7 @@ func ParseFilterNegate(stack *[]*Filter) (err error) {
 
 // Match returns true if the given filter matches the given value.
 func (f *Filter) Match(row *DataRow) bool {
-	colType := f.Column.DataType
-	switch colType {
+	switch f.Column.DataType {
 	case StringCol, StringLargeCol:
 		return f.MatchString(row.GetString(f.Column))
 	case StringListCol:
@@ -487,7 +579,7 @@ func (f *Filter) Match(row *DataRow) bool {
 		// not implemented
 		return false
 	}
-	log.Panicf("not implemented filter type: %v", colType)
+	log.Panicf("not implemented filter type: %v", f.Column.DataType)
 	return false
 }
 
@@ -591,6 +683,14 @@ func (f *Filter) MatchString(value *string) bool {
 		return *value > f.StrValue
 	case GreaterThan:
 		return *value >= f.StrValue
+	case Contains:
+		return strings.Contains(*value, f.StrValue)
+	case ContainsNot:
+		return !strings.Contains(*value, f.StrValue)
+	case ContainsNoCase:
+		return strings.Contains(strings.ToLower(*value), f.StrValue)
+	case ContainsNoCaseNot:
+		return !strings.Contains(strings.ToLower(*value), f.StrValue)
 	}
 	log.Warnf("not implemented op: %v", f.Operator)
 	return false
@@ -699,4 +799,9 @@ func fixBrokenClientsRequestColumn(columnName *string, table TableName) bool {
 	}
 
 	return false
+}
+
+// hasRegexpCharacters returns true if string is a probably a regular expression
+func hasRegexpCharacters(val string) bool {
+	return (strings.ContainsAny(val, "|([{*+?"))
 }

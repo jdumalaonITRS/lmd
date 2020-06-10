@@ -50,7 +50,9 @@ func NewDataRow(store *DataStore, raw *[]interface{}, columns *ColumnList, times
 		return
 	}
 
-	err = d.setReferences(store)
+	d.setLowerCaseCache()
+
+	err = d.setReferences()
 	return
 }
 
@@ -108,8 +110,16 @@ func (d *DataRow) SetData(raw *[]interface{}, columns *ColumnList, timestamp int
 	return d.UpdateValues(0, raw, columns, timestamp)
 }
 
+// setLowerCaseCache sets lowercase columns
+func (d *DataRow) setLowerCaseCache() {
+	for from, to := range d.DataStore.LowerCaseColumns {
+		d.dataString[to] = strings.ToLower(d.dataString[from])
+	}
+}
+
 // setReferences creates reference entries for cross referenced objects
-func (d *DataRow) setReferences(store *DataStore) (err error) {
+func (d *DataRow) setReferences() (err error) {
+	store := d.DataStore
 	for i := range store.Table.RefTables {
 		ref := store.Table.RefTables[i]
 		tableName := ref.Table.Name
@@ -170,7 +180,7 @@ func (d *DataRow) GetString(col *Column) *string {
 		}
 		log.Panicf("unsupported type: %s", col.DataType)
 	case RefStore:
-		ref := d.Refs[col.RefCol.Table.Name]
+		ref := d.Refs[col.RefColTableName]
 		if ref == nil {
 			return interface2stringNoDedup(col.GetEmptyValue())
 		}
@@ -193,7 +203,7 @@ func (d *DataRow) GetStringList(col *Column) *[]string {
 		}
 		log.Panicf("unsupported type: %s", col.DataType)
 	case RefStore:
-		ref := d.Refs[col.RefCol.Table.Name]
+		ref := d.Refs[col.RefColTableName]
 		if ref == nil {
 			return interface2stringlist(col.GetEmptyValue())
 		}
@@ -221,7 +231,7 @@ func (d *DataRow) GetFloat(col *Column) float64 {
 		}
 		log.Panicf("unsupported type: %s", col.DataType)
 	case RefStore:
-		ref := d.Refs[col.RefCol.Table.Name]
+		ref := d.Refs[col.RefColTableName]
 		if ref == nil {
 			return interface2float64(col.GetEmptyValue())
 		}
@@ -242,7 +252,7 @@ func (d *DataRow) GetInt(col *Column) int {
 		}
 		log.Panicf("unsupported type: %s", col.DataType)
 	case RefStore:
-		ref := d.Refs[col.RefCol.Table.Name]
+		ref := d.Refs[col.RefColTableName]
 		if ref == nil {
 			return interface2int(col.GetEmptyValue())
 		}
@@ -265,7 +275,7 @@ func (d *DataRow) GetInt64(col *Column) int64 {
 		}
 		log.Panicf("unsupported type: %s", col.DataType)
 	case RefStore:
-		ref := d.Refs[col.RefCol.Table.Name]
+		ref := d.Refs[col.RefColTableName]
 		if ref == nil {
 			return interface2int64(col.GetEmptyValue())
 		}
@@ -293,7 +303,7 @@ func (d *DataRow) GetInt64List(col *Column) []int64 {
 		}
 		log.Panicf("unsupported type: %s", col.DataType)
 	case RefStore:
-		ref := d.Refs[col.RefCol.Table.Name]
+		ref := d.Refs[col.RefColTableName]
 		if ref == nil {
 			return interface2int64list(col.GetEmptyValue())
 		}
@@ -308,7 +318,7 @@ func (d *DataRow) GetHashMap(col *Column) map[string]string {
 	case LocalStore:
 		log.Panicf("unsupported type: %s", col.DataType)
 	case RefStore:
-		ref := d.Refs[col.RefCol.Table.Name]
+		ref := d.Refs[col.RefColTableName]
 		if ref == nil {
 			return interface2hashmap(col.GetEmptyValue())
 		}
@@ -326,7 +336,7 @@ func (d *DataRow) GetServiceMemberList(col *Column) *[]ServiceMember {
 		}
 		log.Panicf("unsupported type: %s", col.DataType)
 	case RefStore:
-		ref := d.Refs[col.RefCol.Table.Name]
+		ref := d.Refs[col.RefColTableName]
 		if ref == nil {
 			return interface2servicememberlist(col.GetEmptyValue())
 		}
@@ -344,7 +354,7 @@ func (d *DataRow) GetInterfaceList(col *Column) []interface{} {
 		}
 		log.Panicf("unsupported type: %s", col.DataType)
 	case RefStore:
-		ref := d.Refs[col.RefCol.Table.Name]
+		ref := d.Refs[col.RefColTableName]
 		if ref == nil {
 			return interface2interfacelist(col.GetEmptyValue())
 		}
@@ -379,7 +389,7 @@ func (d *DataRow) GetValueByColumn(col *Column) interface{} {
 			log.Panicf("unsupported column %s (type %d) in table %s", col.Name, col.DataType, d.DataStore.Table.Name)
 		}
 	case RefStore:
-		return d.Refs[col.RefCol.Table.Name].GetValueByColumn(col.RefCol)
+		return d.Refs[col.RefColTableName].GetValueByColumn(col.RefCol)
 	case VirtStore:
 		return d.getVirtRowValue(col)
 	default:
@@ -391,7 +401,7 @@ func (d *DataRow) GetValueByColumn(col *Column) interface{} {
 // getVirtRowValue returns the actual value for a virtual column.
 func (d *DataRow) getVirtRowValue(col *Column) interface{} {
 	var value interface{}
-	if col.VirtMap.StatusKey != "" {
+	if col.VirtMap.StatusKey > 0 {
 		if d.DataStore.Peer == nil {
 			log.Panicf("requesting column '%s' from table '%s' with peer", col.Name, d.DataStore.Table.Name)
 		}
@@ -401,7 +411,19 @@ func (d *DataRow) getVirtRowValue(col *Column) interface{} {
 			value, ok = d.getVirtSubLMDValue(col)
 		}
 		if !ok {
-			value = p.StatusGet(col.VirtMap.StatusKey)
+			switch d.DataStore.PeerLockMode {
+			case PeerLockModeFull:
+				value = p.Status[col.VirtMap.StatusKey]
+			case PeerLockModeSimple:
+				switch col.VirtMap.StatusKey {
+				case PeerName:
+					return &(p.Name)
+				case PeerKey:
+					return &(p.ID)
+				default:
+					value = p.StatusGet(col.VirtMap.StatusKey)
+				}
+			}
 		}
 	} else {
 		value = col.VirtMap.ResolvFunc(d, col)
@@ -414,7 +436,7 @@ func VirtColLastStateChangeOrder(d *DataRow, col *Column) interface{} {
 	// return last_state_change or program_start
 	lastStateChange := d.GetIntByName("last_state_change")
 	if lastStateChange == 0 {
-		return d.DataStore.Peer.Status["ProgramStart"]
+		return d.DataStore.Peer.Status[ProgramStart]
 	}
 	return lastStateChange
 }
@@ -505,20 +527,26 @@ func VirtColMembersWithState(d *DataRow, col *Column) interface{} {
 	return res
 }
 
-// VirtColComments returns list of comment IDs (with optional additional information)
+// VirtColComments returns list of comment IDs
 func VirtColComments(d *DataRow, col *Column) interface{} {
+	comments, ok := d.DataStore.Peer.cache.comments[d]
+	if ok {
+		return comments
+	}
+	return emptyInt64List
+}
+
+// VirtColCommentsWithInfo returns list of comment IDs with additional information
+func VirtColCommentsWithInfo(d *DataRow, col *Column) interface{} {
 	commentsStore := d.DataStore.Peer.Tables[TableComments]
 	commentsTable := commentsStore.Table
 	authorCol := commentsTable.GetColumn("author")
 	commentCol := commentsTable.GetColumn("comment")
-	res := make([]interface{}, 0)
-	comments, ok := d.DataStore.Peer.CommentsCache[d]
+	comments, ok := d.DataStore.Peer.cache.comments[d]
 	if !ok {
-		return res
+		return emptyInterfaceList
 	}
-	if col.Name == "comments" {
-		return comments
-	}
+	res := make([]interface{}, 0)
 	for i := range comments {
 		commentID := fmt.Sprintf("%d", comments[i])
 		comment, ok := commentsStore.Index[commentID]
@@ -534,18 +562,24 @@ func VirtColComments(d *DataRow, col *Column) interface{} {
 
 // VirtColDowntimes returns list of downtimes IDs
 func VirtColDowntimes(d *DataRow, col *Column) interface{} {
+	downtimes, ok := d.DataStore.Peer.cache.downtimes[d]
+	if ok {
+		return downtimes
+	}
+	return emptyInt64List
+}
+
+// VirtColDowntimesWithInfo returns list of downtimes IDs with additional information
+func VirtColDowntimesWithInfo(d *DataRow, col *Column) interface{} {
 	downtimesStore := d.DataStore.Peer.Tables[TableDowntimes]
 	downtimesTable := downtimesStore.Table
 	authorCol := downtimesTable.GetColumn("author")
 	commentCol := downtimesTable.GetColumn("comment")
-	res := make([]interface{}, 0)
-	downtimes, ok := d.DataStore.Peer.DowntimesCache[d]
+	downtimes, ok := d.DataStore.Peer.cache.downtimes[d]
 	if !ok {
-		return res
+		return emptyInterfaceList
 	}
-	if col.Name == "downtimes" {
-		return downtimes
-	}
+	res := make([]interface{}, 0)
 	for i := range downtimes {
 		downtimeID := fmt.Sprintf("%d", downtimes[i])
 		downtime, ok := downtimesStore.Index[downtimeID]
@@ -582,14 +616,14 @@ func VirtColTotalServices(d *DataRow, col *Column) interface{} {
 func (d *DataRow) getVirtSubLMDValue(col *Column) (val interface{}, ok bool) {
 	ok = true
 	p := d.DataStore.Peer
-	peerData := p.StatusGet("SubPeerStatus").(map[string]interface{})
+	peerData := p.StatusGet(SubPeerStatus).(map[string]interface{})
 	if peerData == nil {
 		return nil, false
 	}
 	switch col.Name {
 	case "status":
 		// return worst state of LMD and LMDSubs state
-		parentVal := p.StatusGet("PeerStatus").(PeerStatus)
+		parentVal := p.StatusGet(PeerState).(PeerStatus)
 		if parentVal != PeerStatusUp {
 			val = parentVal
 		} else {
@@ -597,7 +631,7 @@ func (d *DataRow) getVirtSubLMDValue(col *Column) (val interface{}, ok bool) {
 		}
 	case "last_error":
 		// return worst state of LMD and LMDSubs state
-		parentVal := p.StatusGet("LastError").(string)
+		parentVal := p.StatusGet(LastError).(string)
 		val, ok = peerData[col.Name]
 		if parentVal != "" && (!ok || val.(string) == "") {
 			val = parentVal
@@ -611,31 +645,25 @@ func (d *DataRow) getVirtSubLMDValue(col *Column) (val interface{}, ok bool) {
 // MatchFilter returns true if the given filter matches the given datarow.
 func (d *DataRow) MatchFilter(filter *Filter) bool {
 	// recursive group filter
-	filterLength := len(filter.Filter)
-	if filterLength > 0 {
-		for i := range filter.Filter {
-			f := filter.Filter[i]
-			subresult := d.MatchFilter(f)
-			switch filter.GroupOperator {
-			case And:
-				// if all conditions must match and we failed already, exit early
-				if !subresult {
-					return false
-				}
-			case Or:
-				// if only one condition must match and we got that already, exit early
-				if subresult {
-					return true
-				}
+	switch filter.GroupOperator {
+	case And:
+		for _, f := range filter.Filter {
+			if !d.MatchFilter(f) {
+				return false
 			}
 		}
-		// if this is an AND filter and we did not return yet, this means all have matched.
-		// else its an OR filter and none has matched so far.
-		return filter.GroupOperator == And
+		return true
+	case Or:
+		for _, f := range filter.Filter {
+			if d.MatchFilter(f) {
+				return true
+			}
+		}
+		return false
 	}
 
 	// if this is a optional column and we do not meet the requirements, match against an empty default column
-	if filter.Column.Optional != NoFlags && !d.DataStore.Peer.HasFlag(filter.Column.Optional) {
+	if filter.ColumnOptional != NoFlags && !d.DataStore.Peer.HasFlag(filter.Column.Optional) {
 		// duplicate filter, but use the empty column
 		f := &Filter{
 			Column:    d.DataStore.Table.GetEmptyColumn(),
@@ -909,8 +937,7 @@ func interface2int64list(in interface{}) []int64 {
 		return (list)
 	}
 	if in == nil {
-		val := make([]int64, 0)
-		return val
+		return emptyInt64List
 	}
 	if list, ok := in.([]int); ok {
 		val := make([]int64, 0, len(list))
@@ -1075,7 +1102,7 @@ func (d *DataRow) isAuthorizedFor(authUser string, host string, service string) 
 
 	// get contacts for host, if we are checking a host or
 	// if this is a service and ServiceAuthorization is loose
-	if (service != "" && p.LocalConfig.ServiceAuthorization == AuthLoose) || service == "" {
+	if (service != "" && p.GlobalConfig.ServiceAuthorization == AuthLoose) || service == "" {
 		hostObj, ok := p.Tables[TableHosts].Index[host]
 		contactsColumn := p.Tables[TableHosts].GetColumn("contacts")
 		// Make sure the host we found is actually valid
@@ -1127,7 +1154,7 @@ func (d *DataRow) isAuthorizedForHostGroup(authUser string, hostgroup string) (c
 		 * and then on the last iteration return true if the contact is a contact
 		 * on the final host
 		 */
-		switch p.LocalConfig.GroupAuthorization {
+		switch p.GlobalConfig.GroupAuthorization {
 		case AuthLoose:
 			if d.isAuthorizedFor(authUser, hostname, "") {
 				canView = true
@@ -1166,7 +1193,7 @@ func (d *DataRow) isAuthorizedForServiceGroup(authUser string, servicegroup stri
 		 * and then on the last iteration return true if the contact is a contact
 		 * on the final host
 		 */
-		switch p.LocalConfig.GroupAuthorization {
+		switch p.GlobalConfig.GroupAuthorization {
 		case AuthLoose:
 			if d.isAuthorizedFor(authUser, members[i][0], members[i][1]) {
 				canView = true

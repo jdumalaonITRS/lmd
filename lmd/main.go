@@ -15,7 +15,6 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
-	"math"
 	"net"
 	"net/http"
 	_ "net/http/pprof"
@@ -26,6 +25,7 @@ import (
 	"regexp"
 	"runtime"
 	"runtime/debug"
+	"runtime/pprof"
 	"strconv"
 	"strings"
 	"sync"
@@ -43,7 +43,7 @@ var Build string
 
 const (
 	// VERSION contains the actual lmd version
-	VERSION = "1.8.2"
+	VERSION = "1.8.3"
 	// NAME defines the name of this project
 	NAME = "lmd"
 
@@ -182,6 +182,10 @@ var flagLogFile string
 var flagPidfile string
 var flagProfile string
 var flagDeadlock int
+var flagCPUProfile string
+var flagMemProfile string
+
+var cpuProfileHandler *os.File
 
 var once sync.Once
 var mainSignalChannel chan os.Signal
@@ -213,6 +217,8 @@ func setFlags() {
 	flag.BoolVar(&flagTraceVerbose, "vvv", false, "enable trace output")
 	flag.BoolVar(&flagVersion, "version", false, "print version and exit")
 	flag.StringVar(&flagProfile, "debug-profiler", "", "start pprof profiler on this port, ex. :6060")
+	flag.StringVar(&flagCPUProfile, "cpuprofile", "", "write cpu profile to `file`")
+	flag.StringVar(&flagMemProfile, "memprofile", "", "write memory profile to `file`")
 	flag.IntVar(&flagDeadlock, "debug-deadlock", 0, "enable deadlock detection with given timeout")
 }
 
@@ -265,6 +271,7 @@ func mainLoop(mainSignalChannel chan os.Signal) (exitCode int) {
 
 	osSignalUsrChannel := make(chan os.Signal, 1)
 	signal.Notify(osSignalUsrChannel, syscall.SIGUSR1)
+	signal.Notify(osSignalUsrChannel, syscall.SIGUSR2)
 
 	lastMainRestart = time.Now().Unix()
 	shutdownChannel := make(chan bool)
@@ -339,7 +346,7 @@ func initializeListeners(localConfig *Config, waitGroupListener *sync.WaitGroup,
 	for _, listen := range localConfig.Listen {
 		if l, ok := Listeners[listen]; ok {
 			l.shutdownChannel = shutdownChannel
-			l.LocalConfig = localConfig
+			l.GlobalConfig = localConfig
 			ListenersNew[listen] = l
 		} else {
 			waitGroupInit.Add(1)
@@ -396,7 +403,7 @@ func initializePeers(localConfig *Config, waitGroupPeers *sync.WaitGroup, waitGr
 				p.PeerLock.Lock()
 				p.waitGroup = waitGroupPeers
 				p.shutdownChannel = shutdownChannel
-				p.LocalConfig = localConfig
+				p.GlobalConfig = localConfig
 				p.PeerLock.Unlock()
 			}
 		}
@@ -441,12 +448,30 @@ func checkFlags() {
 	}
 
 	if flagProfile != "" {
+		if flagCPUProfile != "" || flagMemProfile != "" {
+			fmt.Print("ERROR: either use -debug-profile or -cpu/memprofile, not both\n")
+			os.Exit(ExitCritical)
+		}
 		runtime.SetBlockProfileRate(BlockProfileRateInterval)
+		runtime.SetMutexProfileFraction(BlockProfileRateInterval)
 		go func() {
 			// make sure we log panics properly
 			defer logPanicExit()
 			http.ListenAndServe(flagProfile, http.DefaultServeMux)
 		}()
+	}
+
+	if flagCPUProfile != "" {
+		runtime.SetBlockProfileRate(BlockProfileRateInterval)
+		cpuProfileHandler, err := os.Create(flagCPUProfile)
+		if err != nil {
+			fmt.Printf("ERROR: could not create CPU profile: %s", err.Error())
+			os.Exit(ExitCritical)
+		}
+		if err := pprof.StartCPUProfile(cpuProfileHandler); err != nil {
+			fmt.Printf("ERROR: could not start CPU profile: %s", err.Error())
+			os.Exit(ExitCritical)
+		}
 	}
 
 	if flagDeadlock <= 0 {
@@ -471,15 +496,7 @@ func createPidFile(path string) {
 		return
 	}
 	// check existing pid
-	if dat, err := ioutil.ReadFile(path); err == nil {
-		if pid, err := strconv.Atoi(strings.TrimSpace(string(dat))); err == nil {
-			if process, err := os.FindProcess(pid); err == nil {
-				if err := process.Signal(syscall.Signal(0)); err == nil {
-					fmt.Fprintf(os.Stderr, "ERROR: lmd already running: %d\n", pid)
-					os.Exit(ExitCritical)
-				}
-			}
-		}
+	if !checkPidFile(path) {
 		fmt.Fprintf(os.Stderr, "WARNING: removing stale pidfile %s\n", path)
 	}
 	err := ioutil.WriteFile(path, []byte(fmt.Sprintf("%d\n", os.Getpid())), 0664)
@@ -489,9 +506,37 @@ func createPidFile(path string) {
 	}
 }
 
+// checkPidFile returns false if pidfile is stale
+func checkPidFile(path string) bool {
+	dat, err := ioutil.ReadFile(path)
+	if err != nil {
+		return true
+	}
+
+	if pid, err := strconv.Atoi(strings.TrimSpace(string(dat))); err == nil {
+		if process, err := os.FindProcess(pid); err == nil {
+			if err := process.Signal(syscall.Signal(0)); err == nil {
+				fmt.Fprintf(os.Stderr, "ERROR: lmd already running: %d\n", pid)
+				os.Exit(ExitCritical)
+			}
+		}
+	}
+
+	return false
+}
+
 func deletePidFile(f string) {
 	if f != "" {
 		os.Remove(f)
+	}
+}
+
+func onExit() {
+	deletePidFile(flagPidfile)
+	if flagCPUProfile != "" {
+		pprof.StopCPUProfile()
+		cpuProfileHandler.Close()
+		log.Warnf("cpu profile written to: %s", flagCPUProfile)
 	}
 }
 
@@ -556,7 +601,7 @@ func mainSignalHandler(sig os.Signal, shutdownChannel chan bool, waitGroupPeers 
 		}
 		waitGroupListener.Wait()
 		waitGroupPeers.Wait()
-		deletePidFile(flagPidfile)
+		onExit()
 		return (0)
 	case syscall.SIGINT:
 		fallthrough
@@ -569,7 +614,7 @@ func mainSignalHandler(sig os.Signal, shutdownChannel chan bool, waitGroupPeers 
 		}
 		// wait one second which should be enough for the listeners
 		waitTimeout(waitGroupListener, time.Second)
-		deletePidFile(flagPidfile)
+		onExit()
 		return (1)
 	case syscall.SIGHUP:
 		log.Infof("got sighup, reloading configuration...")
@@ -580,6 +625,22 @@ func mainSignalHandler(sig os.Signal, shutdownChannel chan bool, waitGroupPeers 
 	case syscall.SIGUSR1:
 		log.Errorf("requested thread dump via signal %s", sig)
 		logThreaddump()
+		return (0)
+	case syscall.SIGUSR2:
+		if flagMemProfile == "" {
+			log.Errorf("requested memory profile, but flag -memprofile missing")
+			return (0)
+		}
+		f, err := os.Create(flagMemProfile)
+		if err != nil {
+			log.Errorf("could not create memory profile: %s", err.Error())
+		}
+		defer f.Close()
+		runtime.GC()
+		if err := pprof.WriteHeapProfile(f); err != nil {
+			log.Errorf("could not write memory profile: %s", err.Error())
+		}
+		log.Warnf("memory profile written to: %s", flagMemProfile)
 		return (0)
 	default:
 		log.Warnf("Signal not handled: %v", sig)
@@ -758,17 +819,6 @@ func PeerMapRemove(peerID string) {
 		}
 	}
 	delete(PeerMap, peerID)
-}
-
-// VersionNumeric converts a string version to a float number
-func VersionNumeric(input string) (numeric float64) {
-	pow := float64(0)
-	for _, num := range strings.Split(input, ".") {
-		f, _ := strconv.ParseFloat(num, 64)
-		numeric += f * math.Pow(10, pow)
-		pow -= 3
-	}
-	return numeric
 }
 
 // completePeerHTTPAddr returns autocompleted address for peer
