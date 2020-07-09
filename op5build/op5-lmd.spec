@@ -41,9 +41,9 @@ curl -o go%{golang_version}.linux-amd64.tar.gz https://dl.google.com/go/go%{gola
 tar -xf go%{golang_version}.linux-amd64.tar.gz -C $HOME/
 # make sure the default golang bin is in our path
 export PATH=$PATH:$HOME/go/bin/
-make debugbuild
+make debugbuild BUILD=OP5-%{version}-debug
 mv lmd/lmd lmd/lmd_debugbuild
-make all
+make all BUILD=OP5-%{version}-release
 
 %pre
 %if %not_systemd
