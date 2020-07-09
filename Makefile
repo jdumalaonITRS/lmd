@@ -9,30 +9,36 @@ GOVERSION:=$(shell \
 )
 MINGOVERSION:=00010014
 MINGOVERSIONSTR:=1.14
+BUILD:=$(shell git rev-parse --short HEAD)
+# see https://github.com/go-modules-by-example/index/blob/master/010_tools/README.md
+# and https://github.com/golang/go/wiki/Modules#how-can-i-track-tool-dependencies-for-a-module
+TOOLSFOLDER=$(shell pwd)/tools
+export GOBIN := $(TOOLSFOLDER)
+export PATH := $(GOBIN):$(PATH)
 
 all: build
 
 tools: versioncheck vendor dump
 	go mod download
-	set -e; for DEP in $(shell grep _ buildtools/tools.go | awk '{ print $$2 }'); do \
-		go get $$DEP; \
+	set -e; for DEP in $(shell grep "_ " buildtools/tools.go | awk '{ print $$2 }'); do \
+		go install $$DEP; \
 	done
-	go mod vendor
 	go mod tidy
+	go mod vendor
 
 updatedeps: versioncheck
 	$(MAKE) clean
 	go list -u -m all
 	go mod download
-	set -e; for DEP in $(shell grep _ buildtools/tools.go | awk '{ print $$2 }'); do \
-		go get -u $$DEP; \
+	set -e; for DEP in $(shell grep "_ " buildtools/tools.go | awk '{ print $$2 }'); do \
+		go get $$DEP; \
 	done
 	go mod tidy
 
 vendor:
 	go mod download
-	go mod vendor
 	go mod tidy
+	go mod vendor
 
 dump:
 	if [ $(shell grep -rc Dump $(LAMPDDIR)/*.go | grep -v :0 | grep -v $(LAMPDDIR)/dump.go | wc -l) -ne 0 ]; then \
@@ -43,13 +49,13 @@ dump:
 	rm -f $(LAMPDDIR)/dump.go.bak
 
 build: vendor
-	cd $(LAMPDDIR) && go build -ldflags "-s -w -X main.Build=$(shell git rev-parse --short HEAD)"
+	cd $(LAMPDDIR) && go build -ldflags "-s -w -X main.Build=$(BUILD)"
 
 build-linux-amd64: vendor
-	cd $(LAMPDDIR) && GOOS=linux GOARCH=amd64 go build -ldflags "-s -w -X main.Build=$(shell git rev-parse --short HEAD)" -o lmd.linux.amd64
+	cd $(LAMPDDIR) && GOOS=linux GOARCH=amd64 go build -ldflags "-s -w -X main.Build=$(BUILD)" -o lmd.linux.amd64
 
 debugbuild: fmt dump vendor
-	cd $(LAMPDDIR) && go build -race -ldflags "-X main.Build=$(shell git rev-parse --short HEAD)"
+	cd $(LAMPDDIR) && go build -race -ldflags "-X main.Build=$(BUILD)"
 
 devbuild: debugbuild
 
@@ -105,7 +111,7 @@ citest: vendor
 	go mod tidy
 
 benchmark: fmt
-	cd $(LAMPDDIR) && go test -ldflags "-s -w -X main.Build=$(shell git rev-parse --short HEAD)" -v -bench=B\* -benchtime 10s -run=^$$ . -benchmem
+	cd $(LAMPDDIR) && go test -ldflags "-s -w -X main.Build=$(BUILD)" -v -bench=B\* -benchtime 10s -run=^$$ . -benchmem
 
 racetest: fmt
 	cd $(LAMPDDIR) && go test -race -short -v
@@ -126,6 +132,7 @@ clean:
 	rm -f $(LAMPDDIR)/*.sock
 	rm -f lmd-*.html
 	rm -rf vendor
+	rm -rf $(TOOLSFOLDER)
 
 fmt: generate tools
 	cd $(LAMPDDIR) && goimports -w .

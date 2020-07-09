@@ -5,12 +5,14 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"net"
 	"net/http"
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -37,6 +39,7 @@ type Listener struct {
 	GlobalConfig     *Config
 	waitGroupDone    *sync.WaitGroup
 	waitGroupInit    *sync.WaitGroup
+	openConnections  int64
 }
 
 // NewListener creates a new Listener object
@@ -75,16 +78,7 @@ func QueryServer(c net.Conn, conf *Config) error {
 
 		reqs, err := ParseRequests(c)
 		if err != nil {
-			if err, ok := err.(net.Error); ok {
-				if keepAlive {
-					log.Debugf("closing keepalive connection from %s", remote)
-				} else {
-					log.Debugf("network error from %s: %s", remote, err.Error())
-				}
-				return err
-			}
-			(&Response{Code: 400, Request: &Request{}, Error: err}).Send(c)
-			return err
+			return sendErrorResponse(c, keepAlive, remote, err)
 		}
 		switch {
 		case len(reqs) > 0:
@@ -109,6 +103,23 @@ func QueryServer(c net.Conn, conf *Config) error {
 
 		return err
 	}
+}
+
+// ProcessRequests creates response for all given requests
+func sendErrorResponse(c net.Conn, keepAlive bool, remote string, err error) error {
+	if err, ok := err.(net.Error); ok {
+		if keepAlive {
+			log.Debugf("closing keepalive connection from %s", remote)
+		} else {
+			log.Debugf("network error from %s: %s", remote, err.Error())
+		}
+		return err
+	}
+	if err == io.EOF {
+		return nil
+	}
+	(&Response{Code: 400, Request: &Request{}, Error: err}).Send(c)
+	return err
 }
 
 // ProcessRequests creates response for all given requests
@@ -152,7 +163,7 @@ func ProcessRequests(reqs []*Request, c net.Conn, remote string, conf *Config) (
 		size, err = response.Send(c)
 		duration := time.Since(t1)
 		log.Infof("incoming %s request from %s to %s finished in %s, response size: %s", req.Table.String(), remote, c.LocalAddr().String(), duration.String(), ByteCountBinary(size))
-		if duration > time.Duration(conf.LogSlowQueryThreshold)*time.Second {
+		if duration-time.Duration(req.WaitTimeout)*time.Millisecond > time.Duration(conf.LogSlowQueryThreshold)*time.Second {
 			log.Warnf("slow query finished after %s, response size: %s\n%s", duration.String(), ByteCountBinary(size), strings.TrimSpace(req.String()))
 		} else if size > int64(conf.LogHugeQueryThreshold*1024*1024) {
 			log.Warnf("huge query finished after %s, response size: %s\n%s", duration.String(), ByteCountBinary(size), strings.TrimSpace(req.String()))
@@ -318,7 +329,11 @@ func (l *Listener) LocalListenerLivestatus(connType string, listen string) {
 			// make sure we log panics properly
 			defer logPanicExit()
 
+			atomic.AddInt64(&l.openConnections, 1)
+			promFrontendOpenConnections.WithLabelValues(l.ConnectionString).Set(float64(atomic.LoadInt64(&l.openConnections)))
 			handleConnection(fd, l.GlobalConfig)
+			atomic.AddInt64(&l.openConnections, -1)
+			promFrontendOpenConnections.WithLabelValues(l.ConnectionString).Set(float64(atomic.LoadInt64(&l.openConnections)))
 		}()
 	}
 }

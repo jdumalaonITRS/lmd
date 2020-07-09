@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
@@ -29,7 +30,7 @@ var reResponseHeader = regexp.MustCompile(`^(\d+)\s+(\d+)$`)
 var reHTTPTooOld = regexp.MustCompile(`Can.t locate object method`)
 var reHTTPOMDError = regexp.MustCompile(`<h1>(OMD:.*?)</h1>`)
 var reShinkenVersion = regexp.MustCompile(`\-shinken$`)
-var reIcinga2Version = regexp.MustCompile(`^(r[\d\.-]+|.*\-icinga2)$`)
+var reIcinga2Version = regexp.MustCompile(`^(r[\d.-]+|.*\-icinga2)$`)
 var reNaemonVersion = regexp.MustCompile(`\-naemon$`)
 
 const (
@@ -278,6 +279,8 @@ func NewPeer(globalConfig *Config, config *Connection, waitGroup *sync.WaitGroup
 		p.cache.HTTPClient = NewLMDHTTPClient(tlsConfig, config.Proxy)
 	}
 
+	p.ResetFlags()
+
 	return &p
 }
 
@@ -437,14 +440,18 @@ func (p *Peer) periodicUpdate(ok *bool, lastTimeperiodUpdateMinute *int) {
 	p.StatusSet(LastUpdate, now)
 
 	if lastStatus == PeerStatusBroken {
-		restartRequired, _ := p.UpdateFullTable(TableStatus)
-		if restartRequired {
-			log.Debugf("[%s] broken peer has reloaded, trying again.", p.Name)
-			*ok = p.InitAllTables()
-			*lastTimeperiodUpdateMinute = currentMinute
-		} else {
-			log.Debugf("[%s] waiting for reload", p.Name)
+		res, _, err := p.QueryString("GET status\nOutputFormat: json\nColumns: program_start nagios_pid\n\n")
+		if err == nil && len(*res) > 0 && len((*res)[0]) == 2 {
+			programStart := interface2int64((*res)[0][0])
+			corePid := interface2int((*res)[0][1])
+			if p.StatusGet(ProgramStart) != programStart || p.StatusGet(LastPid) != corePid {
+				log.Debugf("[%s] broken peer has reloaded, trying again.", p.Name)
+				*ok = p.InitAllTables()
+				*lastTimeperiodUpdateMinute = currentMinute
+				return
+			}
 		}
+		log.Debugf("[%s] waiting for reload", p.Name)
 		return
 	}
 
@@ -1548,10 +1555,10 @@ func (p *Peer) Query(req *Request) (result *ResultSet, meta *ResultMetaData, err
 func (p *Peer) QueryString(str string) (*ResultSet, *ResultMetaData, error) {
 	req, _, err := NewRequest(bufio.NewReader(bytes.NewBufferString(str)), ParseDefault)
 	if err != nil {
-		return nil, nil, err
-	}
-	if req == nil {
-		err = errors.New("bad request: empty request")
+		if err == io.EOF {
+			err = errors.New("bad request: empty request")
+			return nil, nil, err
+		}
 		return nil, nil, err
 	}
 	return p.Query(req)
@@ -1675,7 +1682,7 @@ func (p *Peer) GetConnection() (conn net.Conn, connType PeerConnType, err error)
 			promPeerConnections.WithLabelValues(p.Name).Inc()
 			if x > 0 {
 				log.Infof("[%s] active source changed to %s", p.Name, peerAddr)
-				p.ClearFlags()
+				p.ResetFlags()
 			}
 			return
 		}
@@ -2314,7 +2321,8 @@ func (p *Peer) HTTPQuery(req *Request, peerAddr string, query string) (res []byt
 // HTTPPostQueryResult returns response array from thruk api
 func (p *Peer) HTTPPostQueryResult(query *Request, peerAddr string, postData url.Values, headers map[string]string) (result *HTTPResult, err error) {
 	p.cache.HTTPClient.Timeout = time.Duration(p.GlobalConfig.NetTimeout) * time.Second
-	req, err := http.NewRequest("POST", peerAddr, strings.NewReader(postData.Encode()))
+	ctx := context.Background()
+	req, err := http.NewRequestWithContext(ctx, "POST", peerAddr, strings.NewReader(postData.Encode()))
 	if err != nil {
 		return nil, err
 	}
@@ -2982,9 +2990,20 @@ func (p *Peer) SetFlag(flag OptionalFlags) {
 	atomic.StoreUint32(&p.Flags, uint32(f))
 }
 
-// ClearFlags removes all flags
-func (p *Peer) ClearFlags() {
+// ResetFlags removes all flags and sets the initial flags from config
+func (p *Peer) ResetFlags() {
 	atomic.StoreUint32(&p.Flags, uint32(NoFlags))
+
+	// add default flags
+	for _, flag := range p.Config.Flags {
+		switch strings.ToLower(flag) {
+		case "icinga2":
+			log.Debugf("[%s] remote connection Icinga2 flag set", p.Name)
+			p.SetFlag(Icinga2)
+		default:
+			log.Warnf("[%s] unknown flag: %s", p.Name, flag)
+		}
+	}
 }
 
 // GetDataStore returns store for given name or error if peer is offline
@@ -3016,8 +3035,11 @@ func (p *Peer) GetSupportedColumns() (tables map[TableName]map[string]bool, err 
 		Columns: []string{"table", "name"},
 	}
 	p.setQueryOptions(req)
-	res, _, err := p.Query(req)
+	res, _, err := p.query(req) // skip default error handling here
 	if err != nil {
+		if strings.Contains(err.Error(), "Table 'columns' does not exist") {
+			return tables, nil
+		}
 		return nil, err
 	}
 	tables = make(map[TableName]map[string]bool)

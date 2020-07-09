@@ -24,6 +24,8 @@ linters-settings:
     statements: 120
   gocognit:
     min-complexity: 35
+  exhaustive:
+    default-signifies-exhaustive: true
 linters:
   enable-all: true
   disable:
@@ -37,6 +39,8 @@ linters:
     - goconst
     - interfacer
     - wsl
+    - exhaustive
+    - gofumpt
   fast: false
 issues:
   max-same-issues: 0
@@ -50,6 +54,7 @@ issues:
     - "cyclomatic complexity .* of func `.*Less` is high"
     - "cyclomatic complexity .* of func `matchStringListFilter` is high"
     - "cyclomatic complexity .* of func `.*String` is high"
+    - "cyclomatic complexity .* of func `TestRequestKeepalive` is high"
     - "G108: Profiling endpoint is automatically exposed"
     - "ptrToRefParam: consider `commandsByPeer' to be of non-pointer type"
     - "cognitive complexity .* of func `ProcessRequests` is high"
@@ -73,6 +78,9 @@ issues:
     - 'Expect WriteFile permissions to be 0600 or less'
     - 'Top level comment should end in a period'
     - 'data.Options.Sub.*_raw_query.*is deeply nested'
+    - 'missing cases in switch of type SortDirection: _'
+    - 'missing cases in switch of type GroupOperator: _'
+    - 'missing cases in switch of type Operator: _'
   exclude-rules:
     # Exclude some linters from running on tests files.
     - path: _test\.go

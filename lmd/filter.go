@@ -34,8 +34,9 @@ func (op *StatsType) String() string {
 		return "min"
 	case Max:
 		return "Max"
+	default:
+		log.Panicf("not implemented")
 	}
-	log.Panicf("not implemented")
 	return ""
 }
 
@@ -286,13 +287,17 @@ func ParseFilter(value []byte, table TableName, stack *[]*Filter, options ParseO
 
 // setFilterValue converts the text value into the given filters type value
 func (f *Filter) setRegexFilter(options ParseOptions) error {
-	val := f.StrValue
+	val := strings.TrimPrefix(f.StrValue, ".*")
+	val = strings.TrimSuffix(val, ".*")
+
 	if options&ParseOptimize != 0 && !hasRegexpCharacters(val) {
 		switch f.Operator {
 		case RegexMatch:
 			f.Operator = Contains
+			f.StrValue = val
 		case RegexMatchNot:
 			f.Operator = ContainsNot
+			f.StrValue = val
 		case RegexNoCaseMatch:
 			f.Operator = ContainsNoCase
 			f.StrValue = strings.ToLower(val)
@@ -579,7 +584,7 @@ func (f *Filter) Match(row *DataRow) bool {
 		// not implemented
 		return false
 	}
-	log.Panicf("not implemented filter type: %v", f.Column.DataType)
+	log.Panicf("not implemented filter match type: %s", f.Column.DataType.String())
 	return false
 }
 
@@ -599,7 +604,7 @@ func (f *Filter) MatchInt(value int) bool {
 	case GreaterThan:
 		return value >= intVal
 	}
-	log.Warnf("not implemented op: %v", f.Operator)
+	log.Warnf("not implemented Int op: %s", f.Operator.String())
 	return false
 }
 
@@ -619,7 +624,7 @@ func (f *Filter) MatchInt64(value int64) bool {
 	case GreaterThan:
 		return value >= intVal
 	}
-	log.Warnf("not implemented op: %v", f.Operator)
+	log.Warnf("not implemented Int64 op: %s", f.Operator.String())
 	return false
 }
 
@@ -638,7 +643,7 @@ func (f *Filter) MatchFloat(value float64) bool {
 	case GreaterThan:
 		return value >= f.FloatValue
 	}
-	log.Warnf("not implemented op: %v", f.Operator)
+	log.Warnf("not implemented float op: %s", f.Operator.String())
 	return false
 }
 
@@ -657,7 +662,7 @@ func matchEmptyFilter(op Operator) bool {
 	case GreaterThan:
 		return true
 	}
-	log.Warnf("not implemented op: %v", op)
+	log.Warnf("not implemented empty op: %s", op.String())
 	return false
 }
 
@@ -692,7 +697,7 @@ func (f *Filter) MatchString(value *string) bool {
 	case ContainsNoCaseNot:
 		return !strings.Contains(strings.ToLower(*value), f.StrValue)
 	}
-	log.Warnf("not implemented op: %v", f.Operator)
+	log.Warnf("not implemented string op: %s", f.Operator.String())
 	return false
 }
 
@@ -720,14 +725,14 @@ func (f *Filter) MatchStringList(list *[]string) bool {
 			}
 		}
 		return true
-	case RegexMatch, RegexNoCaseMatch:
+	case RegexMatch, RegexNoCaseMatch, Contains, ContainsNoCase:
 		for i := range *list {
 			if f.MatchString(&(*list)[i]) {
 				return true
 			}
 		}
 		return false
-	case RegexMatchNot, RegexNoCaseMatchNot:
+	case RegexMatchNot, RegexNoCaseMatchNot, ContainsNot, ContainsNoCaseNot:
 		for i := range *list {
 			if f.MatchString(&(*list)[i]) {
 				return false
@@ -735,7 +740,7 @@ func (f *Filter) MatchStringList(list *[]string) bool {
 		}
 		return true
 	}
-	log.Warnf("not implemented op: %v", f.Operator)
+	log.Warnf("not implemented stringlist op: %s", f.Operator.String())
 	return false
 }
 
@@ -762,7 +767,7 @@ func (f *Filter) MatchInt64List(list []int64) bool {
 		}
 		return true
 	}
-	log.Warnf("not implemented op: %v", f.Operator)
+	log.Warnf("not implemented Int64list op: %s", f.Operator.String())
 	return false
 }
 
@@ -803,5 +808,5 @@ func fixBrokenClientsRequestColumn(columnName *string, table TableName) bool {
 
 // hasRegexpCharacters returns true if string is a probably a regular expression
 func hasRegexpCharacters(val string) bool {
-	return (strings.ContainsAny(val, "|([{*+?"))
+	return (strings.ContainsAny(val, "|([{*+?^"))
 }
