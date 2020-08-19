@@ -459,7 +459,10 @@ func checkFlags() {
 		go func() {
 			// make sure we log panics properly
 			defer logPanicExit()
-			http.ListenAndServe(flagProfile, http.DefaultServeMux)
+			err := http.ListenAndServe(flagProfile, http.DefaultServeMux)
+			if err != nil {
+				log.Debugf("http.ListenAndServe finished with: %e", err)
+			}
 		}()
 	}
 
@@ -851,4 +854,11 @@ func updateStatistics() {
 	promStringDedupCount.Set(float64(size))
 	promStringDedupBytes.Set(float64(stringdedup.ByteCount()))
 	promStringDedupIndexBytes.Set(float64(32 * size))
+}
+
+func getMinimalTLSConfig() *tls.Config {
+	config := &tls.Config{
+		MinVersion: tls.VersionTLS12,
+	}
+	return (config)
 }

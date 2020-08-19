@@ -813,8 +813,8 @@ func TestHTTPPeer(t *testing.T) {
 	peer, cleanup := GetHTTPMockServerPeer(t)
 	defer cleanup()
 
-	ok := peer.InitAllTables()
-	if err := assertEq(ok, true); err != nil {
+	err := peer.InitAllTables()
+	if err != nil {
 		t.Error(err)
 	}
 }
@@ -1022,6 +1022,40 @@ func TestCustomVarCol(t *testing.T) {
 	}
 	hash := (*res)[0][0].(map[string]interface{})
 	if err = assertEq("1", hash["TEST"].(string)); err != nil {
+		t.Error(err)
+	}
+
+	if err := StopTestPeer(peer); err != nil {
+		panic(err.Error())
+	}
+}
+
+func TestCustomVarColContacts(t *testing.T) {
+	peer := StartTestPeer(1, 2, 9)
+	PauseTestPeers(peer)
+
+	if err := assertEq(1, len(PeerMap)); err != nil {
+		t.Error(err)
+	}
+
+	res, _, err := peer.QueryString("GET contacts\nColumns: custom_variables custom_variable_names custom_variable_values\n\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	val := (*res)[0][1].([]interface{})
+	// custom_variable_names
+	if err = assertEq("FOO", val[0].(string)); err != nil {
+		t.Error(err)
+	}
+	// custom_variable_values
+	val = (*res)[0][2].([]interface{})
+	if err = assertEq("12345", val[0].(string)); err != nil {
+		t.Error(err)
+	}
+	// custom_variables
+	hash := (*res)[0][0].(map[string]interface{})
+	if err = assertEq("12345", hash["FOO"].(string)); err != nil {
 		t.Error(err)
 	}
 
@@ -1378,7 +1412,10 @@ func TestRequestKeepalive(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	conn.(*net.UnixConn).CloseWrite()
+	err = conn.(*net.UnixConn).CloseWrite()
+	if err != nil {
+		t.Error(err)
+	}
 
 	// open connections should be one
 	time.Sleep(KeepAliveWaitInterval)

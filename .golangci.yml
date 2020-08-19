@@ -32,7 +32,6 @@ linters:
     - maligned
     - nakedret
     - gochecknoglobals
-    - errcheck
     - lll
     - gochecknoinits
     - dupl
@@ -41,6 +40,7 @@ linters:
     - wsl
     - exhaustive
     - gofumpt
+    - nlreturn
   fast: false
 issues:
   max-same-issues: 0

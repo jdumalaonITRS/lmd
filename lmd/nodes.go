@@ -166,7 +166,7 @@ func (n *Nodes) Initialize() {
 	if !n.IsClustered() {
 		PeerMapLock.RLock()
 		for _, peer := range PeerMap {
-			if !peer.StatusGet(Updating).(bool) {
+			if peer.StatusGet(Paused).(bool) {
 				peer.Start()
 			}
 		}
@@ -517,7 +517,7 @@ func generateUUID() (uuid string) {
 func (n *Nodes) sendPing(node *NodeAddress, initializing bool, requestData map[string]interface{}) (isOnline bool, forceRedistribute bool) {
 	done := make(chan bool)
 	ownIdentifier := n.ID
-	n.SendQuery(node, "ping", requestData, func(responseData interface{}) {
+	err := n.SendQuery(node, "ping", requestData, func(responseData interface{}) {
 		defer func() { done <- true }()
 		// Parse response
 		dataMap, ok := responseData.(map[string]interface{})
@@ -578,6 +578,9 @@ func (n *Nodes) sendPing(node *NodeAddress, initializing bool, requestData map[s
 			}
 		}
 	})
+	if err != nil {
+		log.Debugf("node sendquery failed: %e", err)
+	}
 
 	<-done
 	return
