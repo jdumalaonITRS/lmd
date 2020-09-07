@@ -409,8 +409,10 @@ func (d *DataRow) GetValueByColumn(col *Column) interface{} {
 			return d.dataFloat[col.Index]
 		case InterfaceListCol:
 			return d.dataInterfaceList[col.Index]
+		case ServiceMemberListCol:
+			return d.dataServiceMemberList[col.Index]
 		default:
-			log.Panicf("unsupported column %s (type %d) in table %s", col.Name, col.DataType.String(), d.DataStore.Table.Name.String())
+			log.Panicf("unsupported column %s (type %s) in table %s", col.Name, col.DataType.String(), d.DataStore.Table.Name.String())
 		}
 	case RefStore:
 		return d.Refs[col.RefColTableName].GetValueByColumn(col.RefCol)
@@ -696,6 +698,7 @@ func (d *DataRow) MatchFilter(filter *Filter) bool {
 			CustomTag: filter.CustomTag,
 			Negate:    filter.Negate,
 		}
+		f.Column.DataType = filter.Column.DataType
 		if f.Negate {
 			return !f.Match(d)
 		}

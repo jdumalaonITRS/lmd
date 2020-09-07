@@ -783,9 +783,15 @@ func (p *Peer) InitAllTables() (err error) {
 				}
 			}
 		case TableComments:
-			p.RebuildCommentsCache()
+			err = p.RebuildCommentsCache()
+			if err != nil {
+				return
+			}
 		case TableDowntimes:
-			p.RebuildDowntimesCache()
+			err = p.RebuildDowntimesCache()
+			if err != nil {
+				return
+			}
 		case TableTimeperiods:
 			lastTimeperiodUpdateMinute, _ := strconv.Atoi(time.Now().Format("4"))
 			p.StatusSet(LastTimeperiodUpdateMinute, lastTimeperiodUpdateMinute)
@@ -1249,40 +1255,24 @@ func (p *Peer) getMissingTimestamps(store *DataStore, res *ResultSet, columns *C
 // which have to be removed.
 // It returns any error encountered.
 func (p *Peer) UpdateDeltaCommentsOrDowntimes(name TableName) (err error) {
-	// add new comments / downtimes
-	store := p.Tables[name]
+	changed, err := p.maxIDOrSizeChanged(name)
+	if !changed || err != nil {
+		return
+	}
 
-	// get number of entrys and max id
+	// fetch all ids to see which ones are missing or to be removed
 	req := &Request{
-		Table:     name,
-		FilterStr: "Stats: id != -1\nStats: max id\n",
+		Table:   name,
+		Columns: []string{"id"},
 	}
 	p.setQueryOptions(req)
 	res, _, err := p.Query(req)
 	if err != nil {
 		return
 	}
-	var maxID int64
-	p.DataLock.RLock()
-	entries := len(store.Data)
-	if entries > 0 {
-		maxID = store.Data[entries-1].GetInt64ByName("id")
-	}
-	p.DataLock.RUnlock()
 
-	if len(*res) == 0 || float64(entries) == interface2float64((*res)[0][0]) && (entries == 0 || interface2float64((*res)[0][1]) == float64(maxID)) {
-		log.Debugf("[%s] %s did not change", p.Name, name.String())
-		return
-	}
-
-	// fetch all ids to see which ones are missing or to be removed
-	req = &Request{
-		Table:   name,
-		Columns: []string{"id"},
-	}
-	p.setQueryOptions(req)
-	res, _, err = p.Query(req)
-	if err != nil {
+	store, err := p.GetDataStore(name)
+	if store == nil {
 		return
 	}
 	p.DataLock.Lock()
@@ -1338,12 +1328,52 @@ func (p *Peer) UpdateDeltaCommentsOrDowntimes(name TableName) (err error) {
 	// reset cache
 	switch name {
 	case TableComments:
-		p.RebuildCommentsCache()
+		err = p.RebuildCommentsCache()
+		if err != nil {
+			return
+		}
 	case TableDowntimes:
-		p.RebuildDowntimesCache()
+		err = p.RebuildDowntimesCache()
+		if err != nil {
+			return
+		}
 	}
 
 	log.Debugf("[%s] updated %s", p.Name, name.String())
+	return
+}
+
+// maxIDOrSizeChanged returns true if table data changed in size or max id
+func (p *Peer) maxIDOrSizeChanged(name TableName) (changed bool, err error) {
+	// get number of entrys and max id
+	req := &Request{
+		Table:     name,
+		FilterStr: "Stats: id != -1\nStats: max id\n",
+	}
+	p.setQueryOptions(req)
+	res, _, err := p.Query(req)
+	if err != nil {
+		return
+	}
+
+	store, err := p.GetDataStore(name)
+	if err != nil {
+		return
+	}
+
+	var maxID int64
+	p.DataLock.RLock()
+	entries := len(store.Data)
+	if entries > 0 {
+		maxID = store.Data[entries-1].GetInt64ByName("id")
+	}
+	p.DataLock.RUnlock()
+
+	if len(*res) == 0 || float64(entries) == interface2float64((*res)[0][0]) && (entries == 0 || interface2float64((*res)[0][1]) == float64(maxID)) {
+		log.Debugf("[%s] %s did not change", p.Name, name.String())
+		return
+	}
+	changed = true
 	return
 }
 
@@ -1844,11 +1874,11 @@ func (p *Peer) CreateObjectByType(table *Table) (err error) {
 
 func (p *Peer) checkStatusFlags() (err error) {
 	// set backend specific flags
-	p.DataLock.RLock()
-	store := p.Tables[TableStatus]
+	store, err := p.GetDataStore(TableStatus)
 	if store == nil {
-		return
+		return nil
 	}
+	p.DataLock.RLock()
 	data := store.Data
 	p.DataLock.RUnlock()
 	if len(data) == 0 {
@@ -2062,6 +2092,9 @@ func (p *Peer) fetchRemotePeersFromAddr(peerAddr string) (sites []interface{}, e
 // It returns a boolean flag whether the remote site has been restarted and any error encountered.
 func (p *Peer) UpdateFullTable(tableName TableName) (restartRequired bool, err error) {
 	store := p.Tables[tableName]
+	if store == nil {
+		return false, fmt.Errorf("cannot update table %s, peer is down: %s", tableName.String(), p.getError())
+	}
 	skip, err := p.skipTableUpdate(store, tableName)
 	if skip || err != nil {
 		return
@@ -2165,6 +2198,7 @@ func (p *Peer) updateTimeperiodsData(store *DataStore, res *ResultSet, columns *
 	data := store.Data
 	now := time.Now().Unix()
 	nameCol := store.GetColumn("name")
+	p.DataLock.Unlock()
 	for i := range *res {
 		row := (*res)[i]
 		if data[i].CheckChangedIntValues(&row, columns) {
@@ -2175,7 +2209,6 @@ func (p *Peer) updateTimeperiodsData(store *DataStore, res *ResultSet, columns *
 			return
 		}
 	}
-	p.DataLock.Unlock()
 	// Update hosts and services with those changed timeperiods
 	for name, state := range changedTimeperiods {
 		log.Debugf("[%s] timeperiod %s has changed to %v, need to update affected hosts/services", p.Name, name, state)
@@ -2634,8 +2667,13 @@ func (p *Peer) PassThrougQuery(res *Response, passthroughRequest *Request, virtC
 	res.Lock.Unlock()
 }
 
-// isOnline returns true if this peer is online and has data
+// isOnline returns true if this peer is online
 func (p *Peer) isOnline() bool {
+	return (p.hasPeerState([]PeerStatus{PeerStatusUp, PeerStatusWarning}))
+}
+
+// hasPeerState returns true if this peer has given state
+func (p *Peer) hasPeerState(states []PeerStatus) bool {
 	status := p.StatusGet(PeerState).(PeerStatus)
 	if p.HasFlag(LMDSub) {
 		realStatus := p.StatusGet(SubPeerStatus).(map[string]interface{})
@@ -2645,8 +2683,10 @@ func (p *Peer) isOnline() bool {
 		}
 		status = PeerStatus(num.(float64))
 	}
-	if status == PeerStatusUp || status == PeerStatusWarning {
-		return true
+	for _, s := range states {
+		if status == s {
+			return true
+		}
 	}
 	return false
 }
@@ -2846,6 +2886,7 @@ func logPanicExitPeer(p *Peer) {
 func (p *Peer) logPeerStatus(logger func(string, ...interface{})) {
 	name := p.Name
 	status := p.Status[PeerState].(PeerStatus)
+	peerflags := OptionalFlags(atomic.LoadUint32(&p.Flags))
 	logger("[%s] PeerAddr:              %v", name, p.Status[PeerAddr])
 	logger("[%s] Idling:                %v", name, p.Status[Idling])
 	logger("[%s] Paused:                %v", name, p.Status[Paused])
@@ -2856,6 +2897,7 @@ func (p *Peer) logPeerStatus(logger func(string, ...interface{})) {
 	logger("[%s] LastFullServiceUpdate: %v", name, p.Status[LastFullServiceUpdate])
 	logger("[%s] LastQuery:             %v", name, p.Status[LastQuery])
 	logger("[%s] Peerstatus:            %s", name, status.String())
+	logger("[%s] Flags:                 %s", name, peerflags.String())
 	logger("[%s] LastError:             %s", name, p.Status[LastError].(string))
 }
 
@@ -3001,28 +3043,42 @@ func (p *Peer) setFederationInfo(data map[string]interface{}, statuskey PeerStat
 }
 
 // RebuildCommentsCache updates the comment cache
-func (p *Peer) RebuildCommentsCache() {
-	cache := p.buildDowntimeCommentsCache(TableComments)
+func (p *Peer) RebuildCommentsCache() (err error) {
+	cache, err := p.buildDowntimeCommentsCache(TableComments)
+	if err != nil {
+		return
+	}
 	p.PeerLock.Lock()
 	p.cache.comments = cache
 	p.PeerLock.Unlock()
 	log.Debugf("comments cache rebuild")
+	return
 }
 
 // RebuildDowntimesCache updates the comment cache
-func (p *Peer) RebuildDowntimesCache() {
-	cache := p.buildDowntimeCommentsCache(TableDowntimes)
+func (p *Peer) RebuildDowntimesCache() (err error) {
+	cache, err := p.buildDowntimeCommentsCache(TableDowntimes)
+	if err != nil {
+		return
+	}
 	p.PeerLock.Lock()
 	p.cache.downtimes = cache
 	p.PeerLock.Unlock()
 	log.Debugf("downtimes cache rebuild")
+	return
 }
 
 // buildDowntimesCache returns the downtimes/comments cache
-func (p *Peer) buildDowntimeCommentsCache(name TableName) map[*DataRow][]int64 {
-	p.DataLock.RLock()
-	cache := make(map[*DataRow][]int64)
+func (p *Peer) buildDowntimeCommentsCache(name TableName) (cache map[*DataRow][]int64, err error) {
 	store := p.Tables[name]
+	if store == nil {
+		return nil, fmt.Errorf("cannot build cache, peer is down: %s", p.getError())
+	}
+
+	p.DataLock.RLock()
+	defer p.DataLock.RUnlock()
+
+	cache = make(map[*DataRow][]int64)
 	idIndex := store.Table.GetColumn("id").Index
 	hostNameIndex := store.Table.GetColumn("host_name").Index
 	serviceDescIndex := store.Table.GetColumn("service_description").Index
@@ -3041,10 +3097,9 @@ func (p *Peer) buildDowntimeCommentsCache(name TableName) map[*DataRow][]int64 {
 		id := row.dataInt64[idIndex]
 		cache[obj] = append(cache[obj], id)
 	}
-	p.DataLock.RUnlock()
 	promObjectCount.WithLabelValues(p.Name, name.String()).Set(float64(len(store.Data)))
 
-	return cache
+	return cache, nil
 }
 
 // HasFlag returns true if flags are present
@@ -3094,8 +3149,7 @@ func (p *Peer) GetDataStore(tableName TableName) (store *DataStore, err error) {
 	store = p.Tables[tableName]
 	p.DataLock.RUnlock()
 	if store == nil || !p.isOnline() {
-		store = nil
-		err = fmt.Errorf("%s", p.getError())
+		err = fmt.Errorf("peer is down: %s", p.getError())
 		return
 	}
 	return
