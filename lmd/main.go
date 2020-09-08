@@ -43,7 +43,7 @@ var Build string
 
 const (
 	// VERSION contains the actual lmd version
-	VERSION = "1.8.3"
+	VERSION = "1.9.0"
 	// NAME defines the name of this project
 	NAME = "lmd"
 
@@ -233,7 +233,7 @@ func main() {
 	defer logPanicExit()
 
 	for {
-		exitCode := mainLoop(mainSignalChannel)
+		exitCode := mainLoop(mainSignalChannel, nil)
 		defer log.Debugf("lmd shutdown complete")
 		if exitCode > 0 {
 			os.Exit(exitCode)
@@ -245,7 +245,7 @@ func main() {
 	}
 }
 
-func mainLoop(mainSignalChannel chan os.Signal) (exitCode int) {
+func mainLoop(mainSignalChannel chan os.Signal, initChannel chan bool) (exitCode int) {
 	localConfig := *(ReadConfig(flagConfigFile))
 	setDefaults(&localConfig)
 	setVerboseFlags(&localConfig)
@@ -304,6 +304,10 @@ func mainLoop(mainSignalChannel chan os.Signal) (exitCode int) {
 
 	once.Do(PrintVersion)
 
+	if initChannel != nil {
+		initChannel <- true
+	}
+
 	// just wait till someone hits ctrl+c or we have to reload
 	statsTimer := time.NewTicker(StatsTimerInterval)
 	for {
@@ -322,7 +326,7 @@ func mainLoop(mainSignalChannel chan os.Signal) (exitCode int) {
 
 // Version returns the LMD version string
 func Version() string {
-	return fmt.Sprintf("%s (Build: %s)", VERSION, Build)
+	return fmt.Sprintf("%s (Build: %s, %s)", VERSION, Build, runtime.Version())
 }
 
 func initializeListeners(localConfig *Config, waitGroupListener *sync.WaitGroup, waitGroupInit *sync.WaitGroup, shutdownChannel chan bool) {
@@ -745,7 +749,7 @@ func setGroupAuthorization(conf *Config) {
 
 // PrintVersion prints the version
 func PrintVersion() {
-	fmt.Printf("%s - version %s (Build: %s) started with config %s\n", NAME, VERSION, Build, flagConfigFile)
+	fmt.Printf("%s - version %s started with config %s\n", NAME, Version(), flagConfigFile)
 }
 
 // ReadConfig reads all config files.
