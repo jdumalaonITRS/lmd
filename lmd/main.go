@@ -22,6 +22,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"runtime"
 	"runtime/debug"
@@ -33,6 +34,7 @@ import (
 	"time"
 
 	"github.com/BurntSushi/toml"
+	jsoniter "github.com/json-iterator/go"
 	"github.com/lkarlslund/stringdedup"
 	"github.com/sasha-s/go-deadlock"
 )
@@ -43,7 +45,7 @@ var Build string
 
 const (
 	// VERSION contains the actual lmd version
-	VERSION = "1.9.0"
+	VERSION = "1.9.1"
 	// NAME defines the name of this project
 	NAME = "lmd"
 
@@ -175,6 +177,19 @@ func (c *configFiles) Set(value string) (err error) {
 // nodeAccessor manages cluster nodes and starts/stops peers.
 var nodeAccessor *Nodes
 
+type arrayFlags struct {
+	list []string
+}
+
+func (i *arrayFlags) String() string {
+	return strings.Join(i.list, ", ")
+}
+
+func (i *arrayFlags) Set(value string) error {
+	i.list = append(i.list, value)
+	return nil
+}
+
 var flagVerbose bool
 var flagVeryVerbose bool
 var flagTraceVerbose bool
@@ -186,6 +201,7 @@ var flagProfile string
 var flagDeadlock int
 var flagCPUProfile string
 var flagMemProfile string
+var flagCfgOption arrayFlags
 
 var cpuProfileHandler *os.File
 
@@ -222,6 +238,7 @@ func setFlags() {
 	flag.StringVar(&flagCPUProfile, "cpuprofile", "", "write cpu profile to `file`")
 	flag.StringVar(&flagMemProfile, "memprofile", "", "write memory profile to `file`")
 	flag.IntVar(&flagDeadlock, "debug-deadlock", 0, "enable deadlock detection with given timeout")
+	flag.Var(&flagCfgOption, "o", "write memory profile to `file`")
 }
 
 func main() {
@@ -247,6 +264,7 @@ func main() {
 
 func mainLoop(mainSignalChannel chan os.Signal, initChannel chan bool) (exitCode int) {
 	localConfig := *(ReadConfig(flagConfigFile))
+	applyArgFlags(flagCfgOption, &localConfig)
 	setDefaults(&localConfig)
 	setVerboseFlags(&localConfig)
 	InitLogging(&localConfig)
@@ -293,6 +311,9 @@ func mainLoop(mainSignalChannel chan os.Signal, initChannel chan bool) (exitCode
 		log.Warnf("pprof profiler listening at %s", flagProfile)
 	}
 
+	once.Do(PrintVersion)
+	logConfig(&localConfig)
+
 	// initialize prometheus
 	prometheusListener := initPrometheus(&localConfig)
 
@@ -301,8 +322,6 @@ func mainLoop(mainSignalChannel chan os.Signal, initChannel chan bool) (exitCode
 
 	// start remote connections
 	initializePeers(&localConfig, waitGroupPeers, waitGroupInit, shutdownChannel)
-
-	once.Do(PrintVersion)
 
 	if initChannel != nil {
 		initChannel <- true
@@ -387,8 +406,9 @@ func initializePeers(localConfig *Config, waitGroupPeers *sync.WaitGroup, waitGr
 			}
 		}
 		if !found {
-			PeerMap[id].Stop()
-			PeerMap[id].Clear(true)
+			p := PeerMap[id]
+			p.Stop()
+			p.ClearData(true)
 			PeerMapRemove(id)
 		}
 	}
@@ -406,11 +426,11 @@ func initializePeers(localConfig *Config, waitGroupPeers *sync.WaitGroup, waitGr
 		if v, ok := PeerMap[c.ID]; ok {
 			if c.Equals(v.Config) {
 				p = v
-				p.PeerLock.Lock()
+				p.Lock.Lock()
 				p.waitGroup = waitGroupPeers
 				p.shutdownChannel = shutdownChannel
 				p.GlobalConfig = localConfig
-				p.PeerLock.Unlock()
+				p.Lock.Unlock()
 			}
 		}
 		PeerMapLock.RUnlock()
@@ -558,6 +578,46 @@ func setVerboseFlags(localConfig *Config) {
 	}
 	if flagTraceVerbose {
 		localConfig.LogLevel = "Trace"
+	}
+}
+
+func applyArgFlags(opts arrayFlags, localConfig *Config) {
+	ps := reflect.ValueOf(localConfig)
+	s := ps.Elem()
+	typeOfS := s.Type()
+
+	for _, opt := range opts.list {
+		tmp := strings.SplitN(opt, "=", 2)
+		if len(tmp) < 2 {
+			log.Fatalf("ERROR: cannot parse option %s, syntax is '-o ConfigOption=Value'", opt)
+		}
+		optname := tmp[0]
+		optvalue := tmp[1]
+		found := false
+		for i := 0; i < s.NumField(); i++ {
+			cfgname := typeOfS.Field(i).Name
+			if strings.EqualFold(cfgname, optname) {
+				f := s.Field(i)
+				if f.IsValid() && f.CanSet() {
+					switch f.Kind() {
+					case reflect.Int, reflect.Int64:
+						f.SetInt(interface2int64(optvalue))
+					case reflect.String:
+						f.SetString(optvalue)
+					case reflect.Bool:
+						f.SetBool(interface2bool(optvalue))
+					default:
+						log.Fatalf("ERROR: cannot set option %s, type %s is not supported", cfgname, f.Kind())
+					}
+					found = true
+					break
+				}
+				log.Fatalf("ERROR: cannot set option %s", cfgname)
+			}
+		}
+		if !found {
+			log.Fatalf("ERROR: no such option %s", optname)
+		}
 	}
 }
 
@@ -799,6 +859,24 @@ func ReadConfig(files []string) *Config {
 	}
 
 	return conf
+}
+
+func logConfig(conf *Config) {
+	// print command line arguments
+	arg, _ := jsoniter.MarshalIndent(os.Args, "", "  ")
+	cfg, _ := jsoniter.MarshalIndent(*conf, "", "  ")
+
+	log.Debug("command line arguments:")
+	for _, s := range strings.Split(string(arg), "\n") {
+		log.Debugf("args: %s", s)
+	}
+
+	replaceAuth := regexp.MustCompile(`"Auth": ".*",`)
+	log.Debug("effective configuration:")
+	for _, s := range strings.Split(string(cfg), "\n") {
+		s = replaceAuth.ReplaceAllString(s, `"Auth": "***",`)
+		log.Debugf("conf: %s", s)
+	}
 }
 
 func logPanicExit() {

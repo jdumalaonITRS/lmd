@@ -146,8 +146,10 @@ func (op *GroupOperator) String() string {
 
 // ResultMetaData contains meta from the response data
 type ResultMetaData struct {
-	Total   int64
-	Columns []string
+	Total    int64         // total number of result rows
+	Columns  []string      // list of requested columns
+	Duration time.Duration // response time in seconds
+	Size     int           // result size in bytes
 }
 
 var reRequestAction = regexp.MustCompile(`^GET +([a-z]+)$`)
@@ -1009,4 +1011,16 @@ func (req *Request) IsDefaultSortOrder() bool {
 		return false
 	}
 	return false
+}
+
+func (req *Request) optimizeResultLimit() (limit int) {
+	if req.Limit != nil && req.IsDefaultSortOrder() {
+		limit = *req.Limit
+		if req.Offset > 0 {
+			limit += req.Offset
+		}
+	} else {
+		limit = -1
+	}
+	return
 }

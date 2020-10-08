@@ -1,4 +1,7 @@
-This file documents the revision history for the Livestatus Multitool Daemon
+This file documents the revision history for the Livestatus Multitool Daemon (LMD)
+
+1.9.1    Sat Sep 26 21:39:50 CEST 2020
+          - add generic -o option to set arbitrary parameters
 
 1.9.0    Tue Sep  8 10:32:12 CEST 2020
           - add support for regex filter for number typed columns
@@ -46,7 +49,7 @@ This file documents the revision history for the Livestatus Multitool Daemon
           - fix negate header in filter groups (#82)
 
 1.6.1    Thu Jul  4 13:58:48 CEST 2019
-          - remove unparsable characters from json inpurt
+          - remove not parsable characters from json input
           - add support for the negate header (#79)
           - add new columns (#81)
           - improve memory usage

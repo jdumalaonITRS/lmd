@@ -123,8 +123,8 @@ func (d *DataRow) setReferences() (err error) {
 	for i := range store.Table.RefTables {
 		ref := store.Table.RefTables[i]
 		tableName := ref.Table.Name
-		refsByName := store.Peer.Tables[tableName].Index
-		refsByName2 := store.Peer.Tables[tableName].Index2
+		refsByName := store.DataSet.tables[tableName].Index
+		refsByName2 := store.DataSet.tables[tableName].Index2
 
 		switch len(ref.Columns) {
 		case 1:
@@ -186,8 +186,8 @@ func (d *DataRow) GetString(col *Column) *string {
 			return interface2stringNoDedup(col.GetEmptyValue())
 		}
 		return ref.GetString(col.RefCol)
-	case VirtStore:
-		return interface2stringNoDedup(d.getVirtRowValue(col))
+	case VirtualStore:
+		return interface2stringNoDedup(d.getVirtualRowValue(col))
 	}
 	panic(fmt.Sprintf("unsupported type: %s", col.DataType))
 }
@@ -211,8 +211,8 @@ func (d *DataRow) GetStringList(col *Column) *[]string {
 			return interface2stringlist(col.GetEmptyValue())
 		}
 		return ref.GetStringList(col.RefCol)
-	case VirtStore:
-		return interface2stringlist(d.getVirtRowValue(col))
+	case VirtualStore:
+		return interface2stringlist(d.getVirtualRowValue(col))
 	}
 	panic(fmt.Sprintf("unsupported type: %s", col.DataType))
 }
@@ -242,8 +242,8 @@ func (d *DataRow) GetFloat(col *Column) float64 {
 			return interface2float64(col.GetEmptyValue())
 		}
 		return ref.GetFloat(col.RefCol)
-	case VirtStore:
-		return interface2float64(d.getVirtRowValue(col))
+	case VirtualStore:
+		return interface2float64(d.getVirtualRowValue(col))
 	}
 	panic(fmt.Sprintf("unsupported type: %s", col.DataType))
 }
@@ -266,8 +266,8 @@ func (d *DataRow) GetInt(col *Column) int {
 			return interface2int(col.GetEmptyValue())
 		}
 		return ref.GetInt(col.RefCol)
-	case VirtStore:
-		return interface2int(d.getVirtRowValue(col))
+	case VirtualStore:
+		return interface2int(d.getVirtualRowValue(col))
 	}
 	panic(fmt.Sprintf("unsupported type: %s", col.StorageType))
 }
@@ -292,8 +292,8 @@ func (d *DataRow) GetInt64(col *Column) int64 {
 			return interface2int64(col.GetEmptyValue())
 		}
 		return ref.GetInt64(col.RefCol)
-	case VirtStore:
-		return interface2int64(d.getVirtRowValue(col))
+	case VirtualStore:
+		return interface2int64(d.getVirtualRowValue(col))
 	}
 	panic(fmt.Sprintf("unsupported type: %s", col.StorageType))
 }
@@ -322,8 +322,8 @@ func (d *DataRow) GetInt64List(col *Column) []int64 {
 			return interface2int64list(col.GetEmptyValue())
 		}
 		return ref.GetInt64List(col.RefCol)
-	case VirtStore:
-		return interface2int64list(d.getVirtRowValue(col))
+	case VirtualStore:
+		return interface2int64list(d.getVirtualRowValue(col))
 	}
 	panic(fmt.Sprintf("unsupported type: %s", col.StorageType))
 }
@@ -339,8 +339,8 @@ func (d *DataRow) GetHashMap(col *Column) map[string]string {
 			return interface2hashmap(col.GetEmptyValue())
 		}
 		return ref.GetHashMap(col.RefCol)
-	case VirtStore:
-		return interface2hashmap(d.getVirtRowValue(col))
+	case VirtualStore:
+		return interface2hashmap(d.getVirtualRowValue(col))
 	}
 	panic(fmt.Sprintf("unsupported type: %s", col.StorageType))
 }
@@ -359,8 +359,8 @@ func (d *DataRow) GetServiceMemberList(col *Column) *[]ServiceMember {
 			return interface2servicememberlist(col.GetEmptyValue())
 		}
 		return ref.GetServiceMemberList(col.RefCol)
-	case VirtStore:
-		return interface2servicememberlist(d.getVirtRowValue(col))
+	case VirtualStore:
+		return interface2servicememberlist(d.getVirtualRowValue(col))
 	}
 	panic(fmt.Sprintf("unsupported type: %s", col.StorageType))
 }
@@ -379,8 +379,8 @@ func (d *DataRow) GetInterfaceList(col *Column) []interface{} {
 			return interface2interfacelist(col.GetEmptyValue())
 		}
 		return ref.GetInterfaceList(col.RefCol)
-	case VirtStore:
-		return interface2interfacelist(d.getVirtRowValue(col))
+	case VirtualStore:
+		return interface2interfacelist(d.getVirtualRowValue(col))
 	}
 	panic(fmt.Sprintf("unsupported type: %s", col.StorageType))
 }
@@ -416,47 +416,47 @@ func (d *DataRow) GetValueByColumn(col *Column) interface{} {
 		}
 	case RefStore:
 		return d.Refs[col.RefColTableName].GetValueByColumn(col.RefCol)
-	case VirtStore:
-		return d.getVirtRowValue(col)
+	case VirtualStore:
+		return d.getVirtualRowValue(col)
 	}
 	panic(fmt.Sprintf("unsupported type: %s", col.StorageType))
 }
 
-// getVirtRowValue returns the actual value for a virtual column.
-func (d *DataRow) getVirtRowValue(col *Column) interface{} {
+// getVirtualRowValue returns the actual value for a virtual column.
+func (d *DataRow) getVirtualRowValue(col *Column) interface{} {
 	var value interface{}
-	if col.VirtMap.StatusKey > 0 {
+	if col.VirtualMap.StatusKey > 0 {
 		if d.DataStore.Peer == nil {
 			log.Panicf("requesting column '%s' from table '%s' with peer", col.Name, d.DataStore.Table.Name)
 		}
 		p := d.DataStore.Peer
 		ok := false
 		if p.HasFlag(LMDSub) {
-			value, ok = d.getVirtSubLMDValue(col)
+			value, ok = d.getVirtualSubLMDValue(col)
 		}
 		if !ok {
 			switch d.DataStore.PeerLockMode {
 			case PeerLockModeFull:
-				value = p.Status[col.VirtMap.StatusKey]
+				value = p.Status[col.VirtualMap.StatusKey]
 			case PeerLockModeSimple:
-				switch col.VirtMap.StatusKey {
+				switch col.VirtualMap.StatusKey {
 				case PeerName:
 					return &(p.Name)
 				case PeerKey:
 					return &(p.ID)
 				default:
-					value = p.StatusGet(col.VirtMap.StatusKey)
+					value = p.StatusGet(col.VirtualMap.StatusKey)
 				}
 			}
 		}
 	} else {
-		value = col.VirtMap.ResolvFunc(d, col)
+		value = col.VirtualMap.ResolveFunc(d, col)
 	}
 	return cast2Type(value, col)
 }
 
-// VirtColStateOrder returns sortable state
-func VirtColLastStateChangeOrder(d *DataRow, col *Column) interface{} {
+// VirtualColLastStateChangeOrder returns sortable state
+func VirtualColLastStateChangeOrder(d *DataRow, col *Column) interface{} {
 	// return last_state_change or program_start
 	lastStateChange := d.GetIntByName("last_state_change")
 	if lastStateChange == 0 {
@@ -465,8 +465,8 @@ func VirtColLastStateChangeOrder(d *DataRow, col *Column) interface{} {
 	return lastStateChange
 }
 
-// VirtColStateOrder returns sortable state
-func VirtColStateOrder(d *DataRow, col *Column) interface{} {
+// VirtualColStateOrder returns sortable state
+func VirtualColStateOrder(d *DataRow, col *Column) interface{} {
 	// return 4 instead of 2, which makes critical come first
 	// this way we can use this column to sort by state
 	state := d.GetIntByName("state")
@@ -476,8 +476,8 @@ func VirtColStateOrder(d *DataRow, col *Column) interface{} {
 	return state
 }
 
-// VirtColHasLongPluginOutput returns 1 if there is long plugin output, 0 if not
-func VirtColHasLongPluginOutput(d *DataRow, col *Column) interface{} {
+// VirtualColHasLongPluginOutput returns 1 if there is long plugin output, 0 if not
+func VirtualColHasLongPluginOutput(d *DataRow, col *Column) interface{} {
 	val := d.GetStringByName("long_plugin_output")
 	if *val != "" {
 		return 1
@@ -485,11 +485,11 @@ func VirtColHasLongPluginOutput(d *DataRow, col *Column) interface{} {
 	return 0
 }
 
-// VirtColServicesWithInfo returns list of services with additional information
-func VirtColServicesWithInfo(d *DataRow, col *Column) interface{} {
+// VirtualColServicesWithInfo returns list of services with additional information
+func VirtualColServicesWithInfo(d *DataRow, col *Column) interface{} {
 	services := d.GetStringListByName("services")
 	hostName := d.GetStringByName("name")
-	servicesStore := d.DataStore.Peer.Tables[TableServices]
+	servicesStore := d.DataStore.DataSet.tables[TableServices]
 	stateCol := servicesStore.Table.GetColumn("state")
 	checkedCol := servicesStore.Table.GetColumn("has_been_checked")
 	outputCol := servicesStore.Table.GetColumn("plugin_output")
@@ -509,13 +509,13 @@ func VirtColServicesWithInfo(d *DataRow, col *Column) interface{} {
 	return res
 }
 
-// VirtColMembersWithState returns a list of hostgroup/servicegroup members with their states
-func VirtColMembersWithState(d *DataRow, col *Column) interface{} {
+// VirtualColMembersWithState returns a list of hostgroup/servicegroup members with their states
+func VirtualColMembersWithState(d *DataRow, col *Column) interface{} {
 	res := make([]interface{}, 0)
 	switch d.DataStore.Table.Name {
 	case TableHostgroups:
 		members := d.GetStringListByName("members")
-		hostsStore := d.DataStore.Peer.Tables[TableHosts]
+		hostsStore := d.DataStore.DataSet.tables[TableHosts]
 		stateCol := hostsStore.Table.GetColumn("state")
 		checkedCol := hostsStore.Table.GetColumn("has_been_checked")
 
@@ -531,7 +531,7 @@ func VirtColMembersWithState(d *DataRow, col *Column) interface{} {
 	case TableServicegroups:
 		membersCol := d.DataStore.GetColumn("members")
 		members := d.GetServiceMemberList(membersCol)
-		servicesStore := d.DataStore.Peer.Tables[TableServices]
+		servicesStore := d.DataStore.DataSet.tables[TableServices]
 		stateCol := servicesStore.Table.GetColumn("state")
 		checkedCol := servicesStore.Table.GetColumn("has_been_checked")
 
@@ -551,22 +551,22 @@ func VirtColMembersWithState(d *DataRow, col *Column) interface{} {
 	return res
 }
 
-// VirtColComments returns list of comment IDs
-func VirtColComments(d *DataRow, col *Column) interface{} {
-	comments, ok := d.DataStore.Peer.cache.comments[d]
+// VirtualColComments returns list of comment IDs
+func VirtualColComments(d *DataRow, col *Column) interface{} {
+	comments, ok := d.DataStore.DataSet.cache.comments[d]
 	if ok {
 		return comments
 	}
 	return emptyInt64List
 }
 
-// VirtColCommentsWithInfo returns list of comment IDs with additional information
-func VirtColCommentsWithInfo(d *DataRow, col *Column) interface{} {
-	commentsStore := d.DataStore.Peer.Tables[TableComments]
+// VirtualColCommentsWithInfo returns list of comment IDs with additional information
+func VirtualColCommentsWithInfo(d *DataRow, col *Column) interface{} {
+	commentsStore := d.DataStore.DataSet.tables[TableComments]
 	commentsTable := commentsStore.Table
 	authorCol := commentsTable.GetColumn("author")
 	commentCol := commentsTable.GetColumn("comment")
-	comments, ok := d.DataStore.Peer.cache.comments[d]
+	comments, ok := d.DataStore.DataSet.cache.comments[d]
 	if !ok {
 		return emptyInterfaceList
 	}
@@ -584,22 +584,22 @@ func VirtColCommentsWithInfo(d *DataRow, col *Column) interface{} {
 	return res
 }
 
-// VirtColDowntimes returns list of downtimes IDs
-func VirtColDowntimes(d *DataRow, col *Column) interface{} {
-	downtimes, ok := d.DataStore.Peer.cache.downtimes[d]
+// VirtualColDowntimes returns list of downtimes IDs
+func VirtualColDowntimes(d *DataRow, col *Column) interface{} {
+	downtimes, ok := d.DataStore.DataSet.cache.downtimes[d]
 	if ok {
 		return downtimes
 	}
 	return emptyInt64List
 }
 
-// VirtColDowntimesWithInfo returns list of downtimes IDs with additional information
-func VirtColDowntimesWithInfo(d *DataRow, col *Column) interface{} {
-	downtimesStore := d.DataStore.Peer.Tables[TableDowntimes]
+// VirtualColDowntimesWithInfo returns list of downtimes IDs with additional information
+func VirtualColDowntimesWithInfo(d *DataRow, col *Column) interface{} {
+	downtimesStore := d.DataStore.DataSet.tables[TableDowntimes]
 	downtimesTable := downtimesStore.Table
 	authorCol := downtimesTable.GetColumn("author")
 	commentCol := downtimesTable.GetColumn("comment")
-	downtimes, ok := d.DataStore.Peer.cache.downtimes[d]
+	downtimes, ok := d.DataStore.DataSet.cache.downtimes[d]
 	if !ok {
 		return emptyInterfaceList
 	}
@@ -617,8 +617,8 @@ func VirtColDowntimesWithInfo(d *DataRow, col *Column) interface{} {
 	return res
 }
 
-// VirtColCustomVariables returns a custom variables hash
-func VirtColCustomVariables(d *DataRow, col *Column) interface{} {
+// VirtualColCustomVariables returns a custom variables hash
+func VirtualColCustomVariables(d *DataRow, col *Column) interface{} {
 	namesCol := d.DataStore.Table.GetColumn("custom_variable_names")
 	valuesCol := d.DataStore.Table.GetColumn("custom_variable_values")
 	names := d.GetStringList(namesCol)
@@ -630,14 +630,14 @@ func VirtColCustomVariables(d *DataRow, col *Column) interface{} {
 	return res
 }
 
-// VirtColHasLongPluginOutput returns 1 if there is long plugin output, 0 if not
-func VirtColTotalServices(d *DataRow, col *Column) interface{} {
+// VirtualColTotalServices returns 1 if there is long plugin output, 0 if not
+func VirtualColTotalServices(d *DataRow, col *Column) interface{} {
 	val := d.GetIntByName("num_services")
 	return val
 }
 
-// getVirtSubLMDValue returns status values for LMDSub backends
-func (d *DataRow) getVirtSubLMDValue(col *Column) (val interface{}, ok bool) {
+// getVirtualSubLMDValue returns status values for LMDSub backends
+func (d *DataRow) getVirtualSubLMDValue(col *Column) (val interface{}, ok bool) {
 	ok = true
 	p := d.DataStore.Peer
 	peerData := p.StatusGet(SubPeerStatus).(map[string]interface{})
@@ -995,13 +995,13 @@ func interface2hashmap(in interface{}) map[string]string {
 		return list
 	case []interface{}:
 		val := make(map[string]string)
-		for _, tupelInterface := range list {
-			if tupel, ok := tupelInterface.([]interface{}); ok {
-				if len(tupel) == 2 {
-					if s, ok := tupel[1].(string); ok {
-						val[tupel[0].(string)] = s
+		for _, tupleInterface := range list {
+			if tuple, ok := tupleInterface.([]interface{}); ok {
+				if len(tuple) == 2 {
+					if s, ok := tuple[1].(string); ok {
+						val[tuple[0].(string)] = s
 					} else {
-						val[tupel[0].(string)] = fmt.Sprintf("%v", tupel[1])
+						val[tuple[0].(string)] = fmt.Sprintf("%v", tuple[1])
 					}
 				}
 			}
@@ -1032,6 +1032,34 @@ func interface2interfacelist(in interface{}) []interface{} {
 	log.Warnf("unsupported interface list type: %v", in)
 	val := make([]interface{}, 0)
 	return val
+}
+
+func interface2bool(in interface{}) bool {
+	switch v := in.(type) {
+	case bool:
+		return v
+	default:
+		val := fmt.Sprintf("%v", in)
+		switch {
+		case strings.EqualFold(val, "y"):
+			return true
+		case strings.EqualFold(val, "yes"):
+			return true
+		case strings.EqualFold(val, "true"):
+			return true
+		case strings.EqualFold(val, "1"):
+			return true
+		case strings.EqualFold(val, "n"):
+			return true
+		case strings.EqualFold(val, "no"):
+			return true
+		case strings.EqualFold(val, "false"):
+			return false
+		case strings.EqualFold(val, "0"):
+			return true
+		}
+	}
+	return false
 }
 
 // deduplicateStringlist store duplicate string lists only once
@@ -1124,12 +1152,13 @@ func (d *DataRow) isAuthorizedFor(authUser string, host string, service string) 
 	canView = false
 
 	p := d.DataStore.Peer
+	ds := d.DataStore.DataSet
 
 	// get contacts for host, if we are checking a host or
 	// if this is a service and ServiceAuthorization is loose
 	if (service != "" && p.GlobalConfig.ServiceAuthorization == AuthLoose) || service == "" {
-		hostObj, ok := p.Tables[TableHosts].Index[host]
-		contactsColumn := p.Tables[TableHosts].GetColumn("contacts")
+		hostObj, ok := ds.tables[TableHosts].Index[host]
+		contactsColumn := ds.tables[TableHosts].GetColumn("contacts")
 		// Make sure the host we found is actually valid
 		if !ok {
 			return
@@ -1144,8 +1173,8 @@ func (d *DataRow) isAuthorizedFor(authUser string, host string, service string) 
 
 	// get contacts on services
 	if service != "" {
-		serviceObj, ok := p.Tables[TableServices].Index2[host][service]
-		contactsColumn := p.Tables[TableServices].GetColumn("contacts")
+		serviceObj, ok := ds.tables[TableServices].Index2[host][service]
+		contactsColumn := ds.tables[TableServices].GetColumn("contacts")
 		if !ok {
 			return
 		}
@@ -1162,10 +1191,11 @@ func (d *DataRow) isAuthorizedFor(authUser string, host string, service string) 
 
 func (d *DataRow) isAuthorizedForHostGroup(authUser string, hostgroup string) (canView bool) {
 	p := d.DataStore.Peer
+	ds := d.DataStore.DataSet
 	canView = false
 
-	hostgroupObj, ok := p.Tables[TableHostgroups].Index[hostgroup]
-	membersColumn := p.Tables[TableHostgroups].GetColumn("members")
+	hostgroupObj, ok := ds.tables[TableHostgroups].Index[hostgroup]
+	membersColumn := ds.tables[TableHostgroups].GetColumn("members")
 	if !ok {
 		return
 	}
@@ -1201,10 +1231,11 @@ func (d *DataRow) isAuthorizedForHostGroup(authUser string, hostgroup string) (c
 
 func (d *DataRow) isAuthorizedForServiceGroup(authUser string, servicegroup string) (canView bool) {
 	p := d.DataStore.Peer
+	ds := d.DataStore.DataSet
 	canView = false
 
-	servicegroupObj, ok := p.Tables[TableServicegroups].Index[servicegroup]
-	membersColumn := p.Tables[TableServicegroups].GetColumn("members")
+	servicegroupObj, ok := ds.tables[TableServicegroups].Index[servicegroup]
+	membersColumn := ds.tables[TableServicegroups].GetColumn("members")
 	if !ok {
 		return
 	}

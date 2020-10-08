@@ -56,7 +56,7 @@ func TestMainFunc(t *testing.T) {
 		}
 	}
 
-	// sort querys
+	// sort queries
 	res, _, err = peer.QueryString("GET backends\nColumns: peer_key bytes_send bytes_received\nSort: bytes_send asc\nSort: bytes_received desc\n\n")
 	if err != nil {
 		t.Fatal(err)
@@ -65,7 +65,7 @@ func TestMainFunc(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// stats querys
+	// stats queries
 	res, _, err = peer.QueryString("GET backends\nStats: bytes_send > 0\nStats: avg bytes_send\nStats: sum bytes_send\nStats: min bytes_send\nStats: max bytes_send\n\n")
 	if err != nil {
 		t.Fatal(err)
@@ -311,6 +311,33 @@ func TestMainConfig(t *testing.T) {
 	os.Remove("test1.ini")
 	os.Remove("test2.ini")
 	os.Remove("test3.ini")
+}
+
+func TestMainArgs(t *testing.T) {
+	cfg := &Config{IdleTimeout: 10, SaveTempRequests: true}
+	args := arrayFlags{list: []string{
+		"idletimeout=300",
+		"SaveTempRequests=false",
+		"ListenPrometheus=/dev/null",
+		"SkipSSLCheck=1",
+	}}
+	applyArgFlags(args, cfg)
+
+	if err := assertEq(cfg.IdleTimeout, int64(300)); err != nil {
+		t.Error(err)
+	}
+
+	if err := assertEq(cfg.SaveTempRequests, false); err != nil {
+		t.Error(err)
+	}
+
+	if err := assertEq(cfg.ListenPrometheus, "/dev/null"); err != nil {
+		t.Error(err)
+	}
+
+	if err := assertEq(cfg.SkipSSLCheck, int(1)); err != nil {
+		t.Error(err)
+	}
 }
 
 func TestMainWaitTimeout(t *testing.T) {
