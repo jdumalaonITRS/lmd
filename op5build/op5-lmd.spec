@@ -1,6 +1,6 @@
 %define not_systemd (0%{?fedora} && 0%{?fedora} < 18) || (0%{?rhel} && 0%{?rhel} < 7)
 %global debug_package %{nil}
-%global golang_version 1.15.2
+%global golang_version 1.15.6
 
 Name:		op5-lmd
 Version:	%{op5version}
