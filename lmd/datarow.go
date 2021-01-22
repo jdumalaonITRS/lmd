@@ -56,7 +56,7 @@ func NewDataRow(store *DataStore, raw *[]interface{}, columns *ColumnList, times
 	return
 }
 
-// GetID calculates and the ID value
+// GetID calculates and returns the ID value (nul byte concatenated primary key values)
 func (d *DataRow) GetID() string {
 	if len(d.DataStore.Table.PrimaryKey) == 0 {
 		return ""
@@ -83,7 +83,7 @@ func (d *DataRow) GetID() string {
 	return id
 }
 
-// GetID2 calculates and the ID value
+// GetID2 returns the 2 strings for tables with 2 primary keys
 func (d *DataRow) GetID2() (string, string) {
 	id1 := d.GetStringByName(d.DataStore.Table.PrimaryKey[0])
 	if *id1 == "" {
@@ -455,6 +455,11 @@ func (d *DataRow) getVirtualRowValue(col *Column) interface{} {
 	return cast2Type(value, col)
 }
 
+// VirtualColLocaltime returns current unix timestamp
+func VirtualColLocaltime(d *DataRow, col *Column) interface{} {
+	return float64(time.Now().UnixNano()) / float64(time.Second)
+}
+
 // VirtualColLastStateChangeOrder returns sortable state
 func VirtualColLastStateChangeOrder(d *DataRow, col *Column) interface{} {
 	// return last_state_change or program_start
@@ -792,8 +797,16 @@ func (d *DataRow) UpdateValuesNumberOnly(dataOffset int, data *[]interface{}, co
 // CheckChangedIntValues returns true if the given data results in an update
 func (d *DataRow) CheckChangedIntValues(data *[]interface{}, columns *ColumnList) bool {
 	for j := range *columns {
-		if interface2int((*data)[j]) != d.dataInt[(*columns)[j].Index] {
-			return true
+		col := (*columns)[j]
+		switch col.DataType {
+		case IntCol:
+			if interface2int((*data)[j]) != d.dataInt[(*columns)[j].Index] {
+				return true
+			}
+		case Int64Col:
+			if interface2int64((*data)[j]) != d.dataInt64[(*columns)[j].Index] {
+				return true
+			}
 		}
 	}
 	return false
@@ -922,6 +935,12 @@ func interface2stringlist(in interface{}) *[]string {
 			val = append(val, *(interface2string(in)))
 		}
 		return &val
+	case string, *string:
+		val := make([]string, 0, 1)
+		if in != "" {
+			val = append(val, *(interface2string(in)))
+		}
+		return &val
 	case []interface{}:
 		val := make([]string, 0, len(list))
 		for i := range list {
@@ -929,7 +948,7 @@ func interface2stringlist(in interface{}) *[]string {
 		}
 		return &val
 	}
-	log.Warnf("unsupported string list type: %v", in)
+	log.Warnf("unsupported stringlist type: %#v (%T)", in, in)
 	val := make([]string, 0)
 	return &val
 }
@@ -952,7 +971,7 @@ func interface2servicememberlist(in interface{}) *[]ServiceMember {
 		}
 		return &val
 	}
-	log.Warnf("unsupported service list type: %v", in)
+	log.Warnf("unsupported servicelist type: %#v (%T)", in, in)
 	val := make([]ServiceMember, 0)
 	return &val
 }
@@ -978,7 +997,7 @@ func interface2int64list(in interface{}) []int64 {
 		}
 		return val
 	}
-	log.Warnf("unsupported int list type: %v", in)
+	log.Warnf("unsupported int64list type: %#v (%T)", in, in)
 	val := make([]int64, 0)
 	return val
 }
@@ -1017,7 +1036,7 @@ func interface2hashmap(in interface{}) map[string]string {
 		}
 		return val
 	default:
-		log.Warnf("unsupported hashmap list type: %v", in)
+		log.Warnf("unsupported hashmap type: %#v (%T)", in, in)
 		val := make(map[string]string)
 		return val
 	}
@@ -1028,7 +1047,7 @@ func interface2interfacelist(in interface{}) []interface{} {
 	if list, ok := in.([]interface{}); ok {
 		return (list)
 	}
-	log.Warnf("unsupported interface list type: %v", in)
+	log.Warnf("unsupported interface list type: %#v (%T)", in, in)
 	val := make([]interface{}, 0)
 	return val
 }

@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
+	"math"
 	"net"
 	"net/http"
 	"net/url"
@@ -34,11 +35,8 @@ var reIcinga2Version = regexp.MustCompile(`^(r[\d.-]+|.*\-icinga2)$`)
 var reNaemonVersion = regexp.MustCompile(`\-naemon$`)
 
 const (
-	// UpdateAdditionalDelta is the number of seconds to add to the last_check filter on delta updates
-	UpdateAdditionalDelta = 3
-
 	// MinFullScanInterval is the minimum interval between two full scans
-	MinFullScanInterval = 30
+	MinFullScanInterval = 60
 
 	// ConnectionPoolCacheSize sets the number of cached connections per peer
 	ConnectionPoolCacheSize = 5
@@ -49,7 +47,8 @@ const (
 	// WaitTimeoutDefault sets the default timeout if nothing specified (1 minute in milliseconds)
 	WaitTimeoutDefault = 60000
 
-	WaitTimeoutCheckInterval = 200 + time.Millisecond
+	// Interval in which wait condition is checked
+	WaitTimeoutCheckInterval = 200 * time.Millisecond
 
 	// ErrorContentPreviewSize sets the number of bytes from the response to include in the error message
 	ErrorContentPreviewSize = 50
@@ -401,11 +400,8 @@ func (p *Peer) periodicUpdate() (err error) {
 
 	// update timeperiods every full minute except when idling
 	if !idling && lastTimeperiodUpdateMinute != currentMinute && data != nil {
-		t1 := time.Now()
 		p.StatusSet(LastTimeperiodUpdateMinute, currentMinute)
-		err = data.UpdateFullTablesList([]TableName{TableTimeperiods, TableHostgroups, TableServicegroups})
-		duration := time.Since(t1).Truncate(time.Millisecond)
-		log.Debugf("[%s] updating timeperiods and host/servicegroup statistics completed (%s)", p.Name, duration)
+		err = p.periodicTimeperiodsUpdate(data)
 		if err != nil {
 			return
 		}
@@ -486,7 +482,7 @@ func (p *Peer) periodicUpdateLMD(force bool) (err error) {
 
 	// set last update timestamp, otherwise we would retry the connection every 500ms instead
 	// of the update interval
-	p.StatusSet(LastUpdate, time.Now().Unix())
+	p.StatusSet(LastUpdate, now)
 
 	columns := []string{"key", "name", "status", "addr", "last_error", "last_update", "last_online", "last_query", "idling"}
 	req := &Request{
@@ -685,6 +681,26 @@ func (p *Peer) updateIdleStatus(idling bool, lastQuery int64) bool {
 	return idling
 }
 
+func (p *Peer) periodicTimeperiodsUpdate(data *DataStoreSet) (err error) {
+	t1 := time.Now()
+	err = data.UpdateFullTablesList([]TableName{TableTimeperiods, TableHostgroups, TableServicegroups})
+	duration := time.Since(t1).Truncate(time.Millisecond)
+	log.Debugf("[%s] updating timeperiods and host/servicegroup statistics completed (%s)", p.Name, duration)
+	if err != nil {
+		return
+	}
+	err = p.requestLocaltime()
+	if err != nil {
+		return
+	}
+	_, cerr := p.fetchConfigTool() // this also sets the thruk version and checks the clock, so it should be called first
+	if cerr != nil {
+		err = cerr
+		return
+	}
+	return
+}
+
 func (p *Peer) checkRestartRequired(err error) error {
 	if err == nil {
 		return nil
@@ -728,6 +744,8 @@ func (p *Peer) InitAllTables() (err error) {
 	p.Lock.Lock()
 	p.Status[LastUpdate] = time.Now().Unix()
 	p.Status[LastFullUpdate] = time.Now().Unix()
+	p.Status[LastFullServiceUpdate] = time.Now().Unix()
+	p.Status[LastFullHostUpdate] = time.Now().Unix()
 	p.Lock.Unlock()
 	data := NewDataStoreSet(p)
 	t1 := time.Now()
@@ -760,7 +778,11 @@ func (p *Peer) InitAllTables() (err error) {
 			}
 
 			// if its http and a status request, try a processinfo query to fetch all backends
-			configtool, _ := p.fetchConfigTool() // this also sets the thruk version so it should be called first
+			configtool, cerr := p.fetchConfigTool() // this also sets the thruk version and checks the clock, so it should be called first
+			if cerr != nil {
+				err = cerr
+				return
+			}
 			logDebugError2(p.fetchRemotePeers())
 			logDebugError(p.checkStatusFlags(statusData))
 
@@ -797,6 +819,11 @@ func (p *Peer) InitAllTables() (err error) {
 			lastTimeperiodUpdateMinute, _ := strconv.Atoi(time.Now().Format("4"))
 			p.StatusSet(LastTimeperiodUpdateMinute, lastTimeperiodUpdateMinute)
 		}
+	}
+
+	err = p.requestLocaltime()
+	if err != nil {
+		return
 	}
 
 	duration := time.Since(t1)
@@ -1358,6 +1385,14 @@ func (p *Peer) checkAvailableTables() (err error) {
 			p.SetFlag(HasLastUpdateColumn)
 		}
 	}
+	if !p.HasFlag(HasLocaltimeColumn) {
+		if _, ok := availableTables[TableStatus]; ok {
+			if _, ok := availableTables[TableStatus]["localtime"]; ok {
+				log.Debugf("[%s] remote connection supports localtime columns", p.Name)
+				p.SetFlag(HasLocaltimeColumn)
+			}
+		}
+	}
 	return
 }
 
@@ -1391,38 +1426,45 @@ func (p *Peer) fetchConfigToolFromAddr(peerAddr string) (conf map[string]interfa
 		options["remote_name"] = p.Config.RemoteName
 	}
 	optionStr, _ := json.Marshal(options)
-	output, result, err := p.HTTPPostQuery(nil, peerAddr, url.Values{
+	output, _, err := p.HTTPPostQuery(nil, peerAddr, url.Values{
 		"data": {fmt.Sprintf("{\"credential\": \"%s\", \"options\": %s}", p.Config.Auth, optionStr)},
 	}, nil)
 	if err != nil {
 		return
 	}
-	conf, ok := extractConfigToolResult(output)
-	if !ok {
-		err = &PeerError{msg: fmt.Sprintf("unknown site error, got: %v", result), kind: ResponseError}
+	conf, err = p.extractConfigToolResult(output)
+	if err != nil {
 		return
 	}
 	return
 }
 
-func extractConfigToolResult(output []interface{}) (map[string]interface{}, bool) {
+func (p *Peer) extractConfigToolResult(output []interface{}) (map[string]interface{}, error) {
 	if len(output) < 3 {
-		return nil, false
+		return nil, nil
 	}
 	data, ok := output[2].(map[string]interface{})
 	if !ok {
-		return nil, false
+		return nil, nil
 	}
 	for k := range data {
-		if processinfo, ok2 := data[k].(map[string]interface{}); ok2 {
-			if c, ok2 := processinfo["configtool"]; ok2 {
-				if v, ok3 := c.(map[string]interface{}); ok3 {
-					return v, true
-				}
+		processinfo, ok := data[k].(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if ts, ok2 := processinfo["localtime"]; ok2 {
+			err := p.CheckLocaltime(interface2float64(ts))
+			if err != nil {
+				return nil, err
+			}
+		}
+		if c, ok2 := processinfo["configtool"]; ok2 {
+			if v, ok3 := c.(map[string]interface{}); ok3 {
+				return v, nil
 			}
 		}
 	}
-	return nil, false
+	return nil, nil
 }
 
 func (p *Peer) fetchRemotePeers() (sites []interface{}, err error) {
@@ -1581,7 +1623,7 @@ func (p *Peer) waitcondition(c chan struct{}, req *Request) (err error) {
 		time.Sleep(WaitTimeoutCheckInterval)
 		switch req.Table {
 		case TableHosts:
-			err = data.UpdateDeltaHosts(fmt.Sprintf("Filter: name = %s\n", req.WaitObject))
+			err = data.UpdateDeltaHosts(fmt.Sprintf("Filter: name = %s\n", req.WaitObject), false)
 		case TableServices:
 			tmp := strings.SplitN(req.WaitObject, ";", 2)
 			if len(tmp) < 2 {
@@ -1589,7 +1631,7 @@ func (p *Peer) waitcondition(c chan struct{}, req *Request) (err error) {
 				close(c)
 				return nil
 			}
-			err = data.UpdateDeltaServices(fmt.Sprintf("Filter: host_name = %s\nFilter: description = %s\n", tmp[0], tmp[1]))
+			err = data.UpdateDeltaServices(fmt.Sprintf("Filter: host_name = %s\nFilter: description = %s\n", tmp[0], tmp[1]), false)
 		default:
 			err = data.UpdateFullTable(req.Table)
 		}
@@ -2257,6 +2299,38 @@ func (p *Peer) ResumeFromIdle() (err error) {
 	} else {
 		// force new update sooner
 		p.StatusSet(LastUpdate, time.Now().Unix()-p.GlobalConfig.Updateinterval)
+	}
+	return
+}
+
+func (p *Peer) requestLocaltime() (err error) {
+	if !p.HasFlag(HasLocaltimeColumn) {
+		return nil
+	}
+	req := &Request{
+		Table:   TableStatus,
+		Columns: []string{"localtime"},
+	}
+	p.setQueryOptions(req)
+	res, _, err := p.Query(req)
+	if err != nil {
+		return
+	}
+	unix := interface2float64((*res)[0][0])
+	return p.CheckLocaltime(unix)
+}
+
+func (p *Peer) CheckLocaltime(unix float64) (err error) {
+	if unix == 0 {
+		return nil
+	}
+
+	nanoseconds := int64((unix - float64(int64(unix))) * float64(time.Second))
+	ts := time.Unix(int64(unix), nanoseconds)
+	diff := time.Since(ts)
+	log.Debugf("[%s] clock difference: %s", p.Name, diff.Truncate(time.Millisecond).String())
+	if p.GlobalConfig.MaxClockDelta > 0 && math.Abs(diff.Seconds()) > p.GlobalConfig.MaxClockDelta {
+		return fmt.Errorf("clock error, peer is off by %s (threshold: %vs)", diff.Truncate(time.Millisecond).String(), p.GlobalConfig.MaxClockDelta)
 	}
 	return
 }

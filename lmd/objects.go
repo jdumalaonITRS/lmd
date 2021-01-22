@@ -102,6 +102,7 @@ func NewBackendsTable() (t *Table) {
 	t.AddPeerInfoColumn("federation_name", StringListCol, "original names when using nested federation")
 	t.AddPeerInfoColumn("federation_addr", StringListCol, "original addresses when using nested federation")
 	t.AddPeerInfoColumn("federation_type", StringListCol, "original types when using nested federation")
+	t.AddExtraColumn("localtime", VirtualStore, None, FloatCol, NoFlags, "The unix timestamp of the local lmd host.")
 	return
 }
 
@@ -172,6 +173,8 @@ func NewStatusTable() (t *Table) {
 	t.AddPeerInfoColumn("peer_last_online", Int64Col, "Timestamp when peer was last online")
 	t.AddPeerInfoColumn("peer_response_time", FloatCol, "Duration of last update in seconds")
 	t.AddPeerInfoColumn("configtool", HashMapCol, "Thruks config tool configuration if available")
+
+	t.AddExtraColumn("localtime", VirtualStore, None, FloatCol, NoFlags, "The unix timestamp of the local lmd host.")
 	return
 }
 
@@ -203,8 +206,6 @@ func NewContactsTable() (t *Table) {
 	t = &Table{DefaultSort: []string{"name"}}
 	t.AddColumn("alias", Static, StringCol, "The full name of the contact")
 	t.AddColumn("can_submit_commands", Static, IntCol, "Wether the contact is allowed to submit commands (0/1)")
-	t.AddColumn("custom_variable_names", Static, StringListCol, "A list of all custom variables of the contact")
-	t.AddColumn("custom_variable_values", Dynamic, StringListCol, "A list of the values of all custom variables of the contact")
 	t.AddColumn("email", Static, StringCol, "The email address of the contact")
 	t.AddColumn("host_notification_period", Static, StringCol, "The time period in which the contact will be notified about host problems")
 	t.AddColumn("host_notifications_enabled", Static, IntCol, "Wether the contact will be notified about host problems in general (0/1)")
@@ -213,6 +214,8 @@ func NewContactsTable() (t *Table) {
 	t.AddColumn("service_notification_period", Static, StringCol, "The time period in which the contact will be notified about service problems")
 	t.AddColumn("service_notifications_enabled", Static, IntCol, "Wether the contact will be notified about service problems in general (0/1)")
 
+	t.AddExtraColumn("custom_variable_names", LocalStore, Dynamic, StringListCol, Naemon, "A list of all custom variables of the contact")
+	t.AddExtraColumn("custom_variable_values", LocalStore, Dynamic, StringListCol, Naemon, "A list of the values of all custom variables of the contact")
 	t.AddExtraColumn("custom_variables", VirtualStore, None, CustomVarCol, NoFlags, "A dictionary of the custom variables")
 
 	t.AddPeerInfoColumn("lmd_last_cache_update", Int64Col, "Timestamp of the last LMD update of this object")
@@ -378,7 +381,7 @@ func NewHostsTable() (t *Table) {
 	t.AddPeerInfoColumn("lmd_last_cache_update", Int64Col, "Timestamp of the last LMD update of this object")
 	t.AddPeerInfoColumn("peer_key", StringCol, "Id of this peer")
 	t.AddPeerInfoColumn("peer_name", StringCol, "Name of this peer")
-	t.AddExtraColumn("last_state_change_order", VirtualStore, None, IntCol, NoFlags, "The last_state_change of this host suitable for sorting. Returns program_start from the core if host has been never checked")
+	t.AddExtraColumn("last_state_change_order", VirtualStore, None, Int64Col, NoFlags, "The last_state_change of this host suitable for sorting. Returns program_start from the core if host has been never checked")
 	t.AddExtraColumn("has_long_plugin_output", VirtualStore, None, IntCol, NoFlags, "Flag wether this host has long_plugin_output or not")
 	t.AddExtraColumn("total_services", VirtualStore, None, IntCol, NoFlags, "The total number of services of the host")
 	return
@@ -536,7 +539,7 @@ func NewServicesTable() (t *Table) {
 	t.AddPeerInfoColumn("lmd_last_cache_update", Int64Col, "Timestamp of the last LMD update of this object")
 	t.AddPeerInfoColumn("peer_key", StringCol, "Id of this peer")
 	t.AddPeerInfoColumn("peer_name", StringCol, "Name of this peer")
-	t.AddExtraColumn("last_state_change_order", VirtualStore, None, IntCol, NoFlags, "The last_state_change of this host suitable for sorting. Returns program_start from the core if host has been never checked")
+	t.AddExtraColumn("last_state_change_order", VirtualStore, None, Int64Col, NoFlags, "The last_state_change of this host suitable for sorting. Returns program_start from the core if host has been never checked")
 	t.AddExtraColumn("state_order", VirtualStore, None, IntCol, NoFlags, "The service state suitable for sorting. Unknown and Critical state are switched")
 	t.AddExtraColumn("has_long_plugin_output", VirtualStore, None, IntCol, NoFlags, "Flag wether this service has long_plugin_output or not")
 	return

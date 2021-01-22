@@ -138,6 +138,8 @@ type Config struct {
 	SyncIsExecuting        bool
 	CompressionMinimumSize int
 	CompressionLevel       int
+	MaxClockDelta          float64
+	UpdateOffset           int64
 }
 
 // PeerMap contains a map of available remote peers.
@@ -417,7 +419,7 @@ func initializePeers(localConfig *Config, waitGroupPeers *sync.WaitGroup, waitGr
 	// Create/set Peer objects
 	PeerMapNew := make(map[string]*Peer)
 	PeerMapOrderNew := make([]string, 0)
-	backends := make([]string, len(localConfig.Connections))
+	backends := make([]string, 0, len(localConfig.Connections))
 	for i := range localConfig.Connections {
 		c := localConfig.Connections[i]
 		// Keep peer if connection settings unchanged
@@ -720,7 +722,10 @@ func mainSignalHandler(sig os.Signal, shutdownChannel chan bool, waitGroupPeers 
 func logThreaddump() {
 	log.Errorf("*** full thread dump:")
 	buf := make([]byte, 1<<16)
-	runtime.Stack(buf, true)
+	n := runtime.Stack(buf, true)
+	if n < len(buf) {
+		buf = buf[:n]
+	}
 	log.Errorf("%s", buf)
 }
 
@@ -756,7 +761,7 @@ func setDefaults(conf *Config) {
 		conf.ListenTimeout = 60
 	}
 	if conf.Updateinterval <= 0 {
-		conf.Updateinterval = 5
+		conf.Updateinterval = 7
 	}
 	if conf.FullUpdateInterval <= 0 {
 		conf.FullUpdateInterval = 0
@@ -778,6 +783,12 @@ func setDefaults(conf *Config) {
 	}
 	if conf.CompressionMinimumSize <= 0 {
 		conf.CompressionMinimumSize = 500
+	}
+	if conf.MaxClockDelta < 0 {
+		conf.MaxClockDelta = 10
+	}
+	if conf.UpdateOffset <= 0 {
+		conf.UpdateOffset = 3
 	}
 }
 

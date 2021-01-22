@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -160,19 +161,27 @@ func (ds *DataStoreSet) UpdateDelta(from, to int64) (err error) {
 		return
 	}
 
+	updateOffset := ds.peer.GlobalConfig.UpdateOffset
+
 	filterStr := ""
 	if from > 0 {
-		if ds.peer.HasFlag(HasLMDLastCacheUpdateColumn) {
-			filterStr = fmt.Sprintf("Filter: lmd_last_cache_update >= %v\nFilter: lmd_last_cache_update < %v\nAnd: 2\n", from, to)
-		} else if ds.peer.HasFlag(HasLastUpdateColumn) {
-			filterStr = fmt.Sprintf("Filter: last_update >= %v\nFilter: last_update < %v\nAnd: 2\n", from, to)
+		switch {
+		case ds.peer.HasFlag(HasLMDLastCacheUpdateColumn):
+			filterStr = fmt.Sprintf("Filter: lmd_last_cache_update >= %v\nFilter: lmd_last_cache_update < %v\nAnd: 2\n", from-updateOffset, to-updateOffset)
+		case ds.peer.HasFlag(HasLastUpdateColumn):
+			filterStr = fmt.Sprintf("Filter: last_update >= %v\nFilter: last_update < %v\nAnd: 2\n", from-updateOffset, to-updateOffset)
+		default:
+			filterStr = fmt.Sprintf("Filter: last_check >= %v\nFilter: last_check < %v\nAnd: 2\n", from-updateOffset, to-updateOffset)
+			if ds.peer.GlobalConfig.SyncIsExecuting {
+				filterStr += "\nFilter: is_executing = 1\nOr: 2\n"
+			}
 		}
 	}
-	err = ds.UpdateDeltaHosts(filterStr)
+	err = ds.UpdateDeltaHosts(filterStr, true)
 	if err != nil {
 		return err
 	}
-	err = ds.UpdateDeltaServices(filterStr)
+	err = ds.UpdateDeltaServices(filterStr, true)
 	if err != nil {
 		return err
 	}
@@ -206,65 +215,40 @@ func (ds *DataStoreSet) UpdateDelta(from, to int64) (err error) {
 }
 
 // UpdateDeltaHosts update hosts by fetching all dynamic data with a last_check filter on the timestamp since
-// the previous update with additional UpdateAdditionalDelta seconds.
+// the previous update with additional updateOffset seconds.
 // It returns any error encountered.
-func (ds *DataStoreSet) UpdateDeltaHosts(filterStr string) (err error) {
-	// update changed hosts
-	store := ds.Get(TableHosts)
-	if store == nil {
-		err = fmt.Errorf("peer not ready, either not initialized or went offline recently")
-		return
-	}
-	p := ds.peer
-	if filterStr == "" {
-		filterStr = fmt.Sprintf("Filter: last_check >= %v\n", (p.StatusGet(LastUpdate).(int64) - UpdateAdditionalDelta))
-		if p.GlobalConfig.SyncIsExecuting {
-			filterStr += "\nFilter: is_executing = 1\nOr: 2\n"
-		}
-		// no filter means regular delta update, so lets check if all last_check dates match
-		ok, uErr := ds.UpdateDeltaFullScan(store, filterStr)
-		if ok || uErr != nil {
-			return uErr
-		}
-	}
-	req := &Request{
-		Table:     store.Table.Name,
-		Columns:   store.DynamicColumnNamesCache,
-		FilterStr: filterStr,
-	}
-	p.setQueryOptions(req)
-	res, meta, err := p.Query(req)
-	if err != nil {
-		return
-	}
-	hostDataOffset := 1
-	return ds.insertDeltaDataResult(hostDataOffset, res, meta, store)
+func (ds *DataStoreSet) UpdateDeltaHosts(filterStr string, tryFullScan bool) (err error) {
+	return ds.updateDeltaHostsServices(TableHosts, filterStr, tryFullScan)
 }
 
 // UpdateDeltaServices update services by fetching all dynamic data with a last_check filter on the timestamp since
-// the previous update with additional UpdateAdditionalDelta seconds.
+// the previous update with additional updateOffset seconds.
 // It returns any error encountered.
-func (ds *DataStoreSet) UpdateDeltaServices(filterStr string) (err error) {
+func (ds *DataStoreSet) UpdateDeltaServices(filterStr string, tryFullScan bool) (err error) {
+	return ds.updateDeltaHostsServices(TableServices, filterStr, tryFullScan)
+}
+
+// updateDeltaHostsServices update hosts / services by fetching all dynamic data with a last_check filter on the timestamp since
+// the previous update with additional updateOffset seconds.
+// It returns any error encountered.
+func (ds *DataStoreSet) updateDeltaHostsServices(tableName TableName, filterStr string, tryFullScan bool) (err error) {
 	// update changed services
-	table := ds.Get(TableServices)
+	table := ds.Get(tableName)
 	if table == nil {
 		err = fmt.Errorf("peer not ready, either not initialized or went offline recently")
 		return
 	}
 	p := ds.peer
-	if filterStr == "" {
-		filterStr = fmt.Sprintf("Filter: last_check >= %v\n", (p.StatusGet(LastUpdate).(int64) - UpdateAdditionalDelta))
-		if p.GlobalConfig.SyncIsExecuting {
-			filterStr += "\nFilter: is_executing = 1\nOr: 2\n"
-		}
-		// no filter means regular delta update, so lets check if all last_check dates match
-		ok, uErr := ds.UpdateDeltaFullScan(table, filterStr)
-		if ok || uErr != nil {
+
+	if tryFullScan {
+		// run regular delta update and lets check if all last_check dates match
+		updated, uErr := ds.UpdateDeltaFullScan(table, filterStr)
+		if updated || uErr != nil {
 			return uErr
 		}
 	}
 	req := &Request{
-		Table:     table.Table.Name,
+		Table:     tableName,
 		Columns:   table.DynamicColumnNamesCache,
 		FilterStr: filterStr,
 	}
@@ -273,8 +257,17 @@ func (ds *DataStoreSet) UpdateDeltaServices(filterStr string) (err error) {
 	if err != nil {
 		return
 	}
-	serviceDataOffset := 2
-	return ds.insertDeltaDataResult(serviceDataOffset, res, meta, table)
+	switch tableName {
+	case TableHosts:
+		hostDataOffset := 1
+		return ds.insertDeltaDataResult(hostDataOffset, res, meta, table)
+	case TableServices:
+		serviceDataOffset := 2
+		return ds.insertDeltaDataResult(serviceDataOffset, res, meta, table)
+	default:
+		log.Panicf("not implemented for: " + tableName.String())
+	}
+	return
 }
 
 func (ds *DataStoreSet) insertDeltaDataResult(dataOffset int, res *ResultSet, resMeta *ResultMetaData, table *DataStore) (err error) {
@@ -393,11 +386,16 @@ func (ds *DataStoreSet) UpdateDeltaFullScan(store *DataStore, filterStr string) 
 		return
 	}
 
-	scanColumns := []string{"last_check",
+	scanColumns := []string{
+		"last_check",
 		"scheduled_downtime_depth",
 		"acknowledged",
 		"active_checks_enabled",
 		"notifications_enabled",
+	}
+	// icinga2 returns hosts and services, append primary keys to sort later
+	if p.HasFlag(Icinga2) {
+		scanColumns = append(scanColumns, store.Table.PrimaryKey...)
 	}
 	req := &Request{
 		Table:   store.Table.Name,
@@ -407,6 +405,11 @@ func (ds *DataStoreSet) UpdateDeltaFullScan(store *DataStore, filterStr string) 
 	res, _, err := p.Query(req)
 	if err != nil {
 		return
+	}
+
+	// icinga2 returns hosts and services in random order but we assume ordered results later
+	if p.HasFlag(Icinga2) {
+		res = res.SortByPrimaryKey(store.Table, req)
 	}
 
 	columns := make(ColumnList, len(scanColumns))
@@ -420,30 +423,35 @@ func (ds *DataStoreSet) UpdateDeltaFullScan(store *DataStore, filterStr string) 
 	}
 
 	if len(missing) > 0 {
+		log.Debugf("[%s] %s delta scan going to update %d timestamps", ds.peer.Name, store.Table.Name.String(), len(missing))
 		filter := []string{filterStr}
-		for lastCheck := range missing {
-			filter = append(filter, fmt.Sprintf("Filter: last_check = %d\n", lastCheck))
+		filter = append(filter, composeTimestampFilter(missing, "last_check")...)
+		filter = append(filter, "Or: 2\n")
+		switch {
+		case len(filter) > 100:
+			log.Warnf("[%s] %s delta scan timestamp filter too complex: %d", ds.peer.Name, store.Table.Name.String(), len(missing))
+		case store.Table.Name == TableServices:
+			err = ds.UpdateDeltaServices(strings.Join(filter, ""), false)
+			updated = true
+		case store.Table.Name == TableHosts:
+			err = ds.UpdateDeltaHosts(strings.Join(filter, ""), false)
+			updated = true
 		}
-		filter = append(filter, fmt.Sprintf("Or: %d\n", len(filter)))
-		if store.Table.Name == TableServices {
-			err = ds.UpdateDeltaServices(strings.Join(filter, ""))
-		} else if store.Table.Name == TableHosts {
-			err = ds.UpdateDeltaHosts(strings.Join(filter, ""))
-		}
+	} else {
+		log.Debugf("[%s] %s delta scan did not find any timestamps", ds.peer.Name, store.Table.Name.String())
 	}
 
-	if store.Table.Name == TableServices {
+	switch store.Table.Name {
+	case TableServices:
 		p.StatusSet(LastFullServiceUpdate, time.Now().Unix())
-	} else if store.Table.Name == TableHosts {
+	case TableHosts:
 		p.StatusSet(LastFullHostUpdate, time.Now().Unix())
 	}
-	updated = true
 	return
 }
 
 // getMissingTimestamps returns list of last_check dates which can be used to delta update
-func (ds *DataStoreSet) getMissingTimestamps(store *DataStore, res *ResultSet, columns *ColumnList) (missing map[int64]bool, err error) {
-	missing = make(map[int64]bool)
+func (ds *DataStoreSet) getMissingTimestamps(store *DataStore, res *ResultSet, columns *ColumnList) (missing []int64, err error) {
 	ds.Lock.RLock()
 	p := ds.peer
 	data := store.Data
@@ -458,13 +466,29 @@ func (ds *DataStoreSet) getMissingTimestamps(store *DataStore, res *ResultSet, c
 		p.setBroken(fmt.Sprintf("got more %s than expected. Hint: check clients 'max_response_size' setting.", store.Table.Name.String()))
 		return
 	}
+
+	missedUnique := make(map[int64]bool)
+	updateThreshold := time.Now().Unix() - ds.peer.GlobalConfig.UpdateOffset
 	for i := range *res {
 		row := (*res)[i]
 		if data[i].CheckChangedIntValues(&row, columns) {
-			missing[interface2int64(row[0])] = true
+			ts := interface2int64(row[0])
+			if ts < updateThreshold {
+				missedUnique[ts] = true
+			}
 		}
 	}
 	ds.Lock.RUnlock()
+
+	// return uniq sorted keys
+	missing = make([]int64, len(missedUnique))
+	i := 0
+	for lastCheck := range missedUnique {
+		missing[i] = lastCheck
+		i++
+	}
+	sort.Slice(missing, func(i, j int) bool { return missing[i] < missing[j] })
+
 	return
 }
 
@@ -641,7 +665,7 @@ func (ds *DataStoreSet) UpdateFullTable(tableName TableName) (err error) {
 	ds.Lock.RUnlock()
 	if len(*res) != len(data) {
 		err = fmt.Errorf("site returned different number of objects, assuming backend has been restarted, table: %s, expected: %d, received: %d", store.Table.Name.String(), len(data), len(*res))
-		log.Debugf("[%s] %s", err.Error())
+		log.Debugf("[%s] %s", p.Name, err.Error())
 		return &PeerError{msg: err.Error(), kind: RestartRequiredError}
 	}
 
@@ -728,11 +752,11 @@ func (ds *DataStoreSet) updateTimeperiodsData(store *DataStore, res *ResultSet, 
 	// Update hosts and services with those changed timeperiods
 	for name, state := range changedTimeperiods {
 		log.Debugf("[%s] timeperiod %s has changed to %v, need to update affected hosts/services", ds.peer.Name, name, state)
-		err = ds.UpdateDeltaHosts("Filter: check_period = " + name + "\nFilter: notification_period = " + name + "\nOr: 2\n")
+		err = ds.UpdateDeltaHosts("Filter: check_period = "+name+"\nFilter: notification_period = "+name+"\nOr: 2\n", false)
 		if err != nil {
 			return
 		}
-		err = ds.UpdateDeltaServices("Filter: check_period = " + name + "\nFilter: notification_period = " + name + "\nOr: 2\n")
+		err = ds.UpdateDeltaServices("Filter: check_period = "+name+"\nFilter: notification_period = "+name+"\nOr: 2\n", false)
 		if err != nil {
 			return
 		}
@@ -751,7 +775,7 @@ func (ds *DataStoreSet) RebuildCommentsCache() (err error) {
 	ds.cache.comments = cache
 	ds.Lock.Unlock()
 	duration := time.Since(t1).Truncate(time.Millisecond)
-	log.Debugf("comments cache rebuild (%s)", duration)
+	log.Debugf("[%s] comments cache rebuild (%s)", ds.peer.Name, duration)
 	return
 }
 
@@ -766,7 +790,7 @@ func (ds *DataStoreSet) RebuildDowntimesCache() (err error) {
 	ds.cache.downtimes = cache
 	ds.Lock.Unlock()
 	duration := time.Since(t1).Truncate(time.Millisecond)
-	log.Debugf("downtimes cache rebuild (%s)", duration)
+	log.Debugf("[%s] downtimes cache rebuild (%s)", ds.peer.Name, duration)
 	return
 }
 
@@ -802,4 +826,45 @@ func (ds *DataStoreSet) buildDowntimeCommentsCache(name TableName) (cache map[*D
 	promObjectCount.WithLabelValues(ds.peer.Name, name.String()).Set(float64(len(store.Data)))
 
 	return cache, nil
+}
+
+func composeTimestampFilter(timestamps []int64, attribute string) []string {
+	filter := []string{}
+	block := struct {
+		start int64
+		end   int64
+	}{-1, -1}
+	for _, ts := range timestamps {
+		if block.start == -1 {
+			block.start = ts
+			block.end = ts
+			continue
+		}
+		if block.end == ts-1 {
+			block.end = ts
+			continue
+		}
+
+		if block.start != -1 {
+			if block.start == block.end {
+				filter = append(filter, fmt.Sprintf("Filter: %s = %d\n", attribute, block.start))
+			} else {
+				filter = append(filter, fmt.Sprintf("Filter: %s >= %d\nFilter: %s <= %d\nAnd: 2\n", attribute, block.start, attribute, block.end))
+			}
+		}
+
+		block.start = ts
+		block.end = ts
+	}
+	if block.start != -1 {
+		if block.start == block.end {
+			filter = append(filter, fmt.Sprintf("Filter: %s = %d\n", attribute, block.start))
+		} else {
+			filter = append(filter, fmt.Sprintf("Filter: %s >= %d\nFilter: %s <= %d\nAnd: 2\n", attribute, block.start, attribute, block.end))
+		}
+	}
+	if len(filter) > 1 {
+		filter = append(filter, fmt.Sprintf("Or: %d\n", len(filter)))
+	}
+	return filter
 }
