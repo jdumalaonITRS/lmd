@@ -8,11 +8,7 @@
     missingok
     notifempty
     postrotate
-        if command -v systemctl &>/dev/null; then
-            systemctl try-restart lmd > /dev/null 2>&1
-        else
-            /sbin/service lmd condrestart 2> /dev/null > /dev/null || true
-        fi
+        systemctl try-restart lmd.service > /dev/null 2>&1
     endscript
     create 0664 monitor apache
 }
