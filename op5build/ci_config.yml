@@ -1,13 +1,39 @@
+pre:
+  exclude: ['el6/x86_64']
+  steps: |
+    set -e
+
+    # Download golang locally on CentOS 7. In rpmbuild mock environment it's
+    # installed from EPEL.
+    . /etc/os-release || :
+    if [ "$VERSION_ID" == "7" ]; then
+      go_archive=go1.15.5.linux-amd64.tar.gz
+      if ! [ -s /tmp/$go_archive ]; then
+        echo "Downloading $go_archive ..."
+        curl -L -o /tmp/$go_archive https://dl.google.com/go/$go_archive
+      fi
+      rm -rf go/
+      tar -xf /tmp/$go_archive
+      export GOPATH="$(pwd)/go"
+      export GOBIN="$GOPATH/bin"
+      export PATH="$GOBIN:$PATH"
+      export GOPROXY="https://proxy.golang.org,direct"
+    fi
+    go env
+    # Download all dependencies before rpm build.
+    cd src
+    make vendor
+    make tools
+
 post:
   install:
-    - curl
-    - tar
+    - make
+    - gcc
+    - golang
   steps: |
-    export GOPATH=/root/go
-    export GOBIN=$GOPATH/bin
-    curl -o /tmp/go1.14.1.linux-amd64.tar.gz https://dl.google.com/go/go1.14.1.linux-amd64.tar.gz
-    tar -xf /tmp/go1.14.1.linux-amd64.tar.gz -C /root/
-    export PATH=/root/go/bin/:$PATH
+    # Using a proxy offers some protection against library makers suddently
+    # deleting a git tag in their repo, where go would download libraries.
+    export GOPROXY="https://proxy.golang.org,direct"
     make test
     make benchmark
     make racetest

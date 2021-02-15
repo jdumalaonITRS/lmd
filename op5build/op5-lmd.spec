@@ -8,9 +8,11 @@ Summary:	OP5 monitor lmd integration
 License:	GPLv3
 URL:		https://www.itrsgroup.com
 Source:		%name-%version.tar.gz
+Patch0:		op5build/Makefile.patch
 BuildRoot:	%{_tmppath}/%{name}-%{version}
 
 BuildRequires: git
+BuildRequires: golang >= 1.14
 Requires: op5-naemon
 Requires: monitor-livestatus
 %systemd_requires
@@ -29,17 +31,14 @@ Build with debug symbols for the lmd integration in OP5 Monitor
 
 %prep
 %setup -q
+# Patch Makefile to skip downloading dependencies, they were downloaded pre-build.
+%patch0 -p1
 
 %build
-# LMD requires Golang 1.14, which is not yet in EPEL
-# We manually download it for now
-curl -o go%{golang_version}.linux-amd64.tar.gz https://dl.google.com/go/go%{golang_version}.linux-amd64.tar.gz
-tar -xf go%{golang_version}.linux-amd64.tar.gz -C $HOME/
-# make sure the default golang bin is in our path
-export PATH=$PATH:$HOME/go/bin/
+export GOPROXY=off
 make debugbuild BUILD=OP5-%{version}-debug
 mv lmd/lmd lmd/lmd_debugbuild
-make all BUILD=OP5-%{version}-release
+make build BUILD=OP5-%{version}-release
 
 
 %install
@@ -119,6 +118,8 @@ rm -rf %buildroot
 %changelog
 * Fri Feb 12 2021 Aksel Sjögren <asjogren@itrsgroup.com> - 2021.3
 - Remove EL6 and pre-systemd support.
+- Use golang from OS repos when building package.
+- Use pre-downloaded dependencies.
 * Wed Sep 25 2019 Jacob Hansen <jhansen@op5.com> - 2019.i
 - Make sure the log file is being created.
 * Tue Jul 2 2019 Jacob Hansen <jhansen@op5.com> - 2019.g

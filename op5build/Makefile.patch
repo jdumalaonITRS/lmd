@@ -1,0 +1,12 @@
+diff --git a/Makefile b/Makefile
+index 98a7f06..c806a61 100644
+--- a/Makefile
++++ b/Makefile
+@@ -13 +12,0 @@ MINGOVERSIONSTR:=1.14
+-BUILD:=$(shell git rev-parse --short HEAD)
+@@ -52 +51 @@ dump:
+-build: vendor
++build:
+@@ -58 +57 @@ build-linux-amd64: vendor
+-debugbuild: fmt dump vendor
++debugbuild: dump
