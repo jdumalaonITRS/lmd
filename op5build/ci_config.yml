@@ -1,7 +1,7 @@
 pre:
   exclude: ['el6/x86_64']
   steps: |
-    set -e
+    set -ex
 
     # Download golang locally on CentOS 7. In rpmbuild mock environment it's
     # installed from EPEL.
@@ -12,6 +12,7 @@ pre:
         echo "Downloading $go_archive ..."
         curl -L -o /tmp/$go_archive https://dl.google.com/go/$go_archive
       fi
+      chmod -fR u+w go/ || :
       rm -rf go/
       tar -xf /tmp/$go_archive
       export GOPATH="$(pwd)/go"
