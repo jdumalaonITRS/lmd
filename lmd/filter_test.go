@@ -8,38 +8,38 @@ import (
 func TestStringFilter(t *testing.T) {
 	// compare empty strings
 	val := ""
-	if err := assertEq(true, (&Filter{Operator: Equal, StrValue: ""}).MatchString(&val)); err != nil {
+	if err := assertEq(true, (&Filter{Operator: Equal, StrValue: ""}).MatchString(val)); err != nil {
 		t.Error(err)
 	}
-	if err := assertEq(false, (&Filter{Operator: Unequal, StrValue: ""}).MatchString(&val)); err != nil {
+	if err := assertEq(false, (&Filter{Operator: Unequal, StrValue: ""}).MatchString(val)); err != nil {
 		t.Error(err)
 	}
 }
 
 func TestStringListFilter(t *testing.T) {
 	value := []string{"abc", "def"}
-	if err := assertEq(true, (&Filter{Operator: GreaterThan, StrValue: "def"}).MatchStringList(&value)); err != nil {
+	if err := assertEq(true, (&Filter{Operator: GreaterThan, StrValue: "def"}).MatchStringList(value)); err != nil {
 		t.Error(err)
 	}
-	if err := assertEq(false, (&Filter{Operator: GreaterThan, StrValue: "xyz"}).MatchStringList(&value)); err != nil {
+	if err := assertEq(false, (&Filter{Operator: GreaterThan, StrValue: "xyz"}).MatchStringList(value)); err != nil {
 		t.Error(err)
 	}
 }
 
 func TestStringListNegatedFilter(t *testing.T) {
 	value := []string{"abc", "def"}
-	if err := assertEq(false, (&Filter{Operator: ContainsNot, StrValue: "def"}).MatchStringList(&value)); err != nil {
+	if err := assertEq(false, (&Filter{Operator: ContainsNot, StrValue: "def"}).MatchStringList(value)); err != nil {
 		t.Error(err)
 	}
-	if err := assertEq(true, (&Filter{Operator: GroupContainsNot, StrValue: "xyz"}).MatchStringList(&value)); err != nil {
+	if err := assertEq(true, (&Filter{Operator: GroupContainsNot, StrValue: "xyz"}).MatchStringList(value)); err != nil {
 		t.Error(err)
 	}
 
 	value = []string{}
-	if err := assertEq(true, (&Filter{Operator: ContainsNot, StrValue: "def"}).MatchStringList(&value)); err != nil {
+	if err := assertEq(true, (&Filter{Operator: ContainsNot, StrValue: "def"}).MatchStringList(value)); err != nil {
 		t.Error(err)
 	}
-	if err := assertEq(true, (&Filter{Operator: GroupContainsNot, StrValue: "xyz"}).MatchStringList(&value)); err != nil {
+	if err := assertEq(true, (&Filter{Operator: GroupContainsNot, StrValue: "xyz"}).MatchStringList(value)); err != nil {
 		t.Error(err)
 	}
 }
@@ -57,11 +57,11 @@ func TestInt64ListFilter(t *testing.T) {
 func TestRegexpStringFilter(t *testing.T) {
 	value := "1"
 	regex := regexp.MustCompile("[12]")
-	if err := assertEq(true, (&Filter{Operator: RegexMatch, Regexp: regex}).MatchString(&value)); err != nil {
+	if err := assertEq(true, (&Filter{Operator: RegexMatch, Regexp: regex}).MatchString(value)); err != nil {
 		t.Error(err)
 	}
 	regex = regexp.MustCompile("[02]")
-	if err := assertEq(false, (&Filter{Operator: RegexMatch, Regexp: regex}).MatchString(&value)); err != nil {
+	if err := assertEq(false, (&Filter{Operator: RegexMatch, Regexp: regex}).MatchString(value)); err != nil {
 		t.Error(err)
 	}
 }

@@ -21,7 +21,6 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"reflect"
 	"regexp"
 	"runtime"
@@ -33,8 +32,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/BurntSushi/toml"
-	jsoniter "github.com/json-iterator/go"
 	"github.com/lkarlslund/stringdedup"
 	"github.com/sasha-s/go-deadlock"
 )
@@ -45,7 +42,7 @@ var Build string
 
 const (
 	// VERSION contains the actual lmd version
-	VERSION = "1.9.5"
+	VERSION = "2.0.0"
 	// NAME defines the name of this project
 	NAME = "lmd"
 
@@ -62,85 +59,36 @@ const (
 	ExitUnknown = 3
 
 	// StatsTimerInterval sets the interval at which statistics will be updated
-	StatsTimerInterval = 30 * time.Second
+	StatsTimerInterval = 60 * time.Second
 
 	// HTTPClientTimeout sets the default HTTP client timeout
 	HTTPClientTimeout = 30 * time.Second
 
 	// BlockProfileRateInterval sets the profiling interval when started with -profile
 	BlockProfileRateInterval = 10
+
+	// GC Percentage level like GOGC environment
+	GCPercentage = 30
+
+	ThrukMultiBackendMinVersion = 2.23
 )
+
+// ContextKey is a key used as context key
+type ContextKey string
+
+const (
+	CtxPeer    ContextKey = "peer"
+	CtxClient  ContextKey = "client"
+	CtxRequest ContextKey = "request"
+)
+
+var AvailableContextKeys = []ContextKey{CtxPeer, CtxClient, CtxRequest}
 
 // https://github.com/golang/go/issues/8005#issuecomment-190753527
 type noCopy struct{}
 
 func (*noCopy) Lock()   {}
 func (*noCopy) Unlock() {}
-
-// Connection defines a single connection configuration.
-type Connection struct {
-	Name           string
-	ID             string
-	Source         []string
-	Auth           string
-	RemoteName     string `toml:"remote_name"`
-	Section        string
-	TLSCertificate string
-	TLSKey         string
-	TLSCA          string
-	TLSSkipVerify  int
-	Proxy          string
-	Flags          []string
-}
-
-// Equals checks if two connection objects are identical.
-func (c *Connection) Equals(other *Connection) bool {
-	equal := c.ID == other.ID
-	equal = equal && c.Name == other.Name
-	equal = equal && c.Auth == other.Auth
-	equal = equal && c.RemoteName == other.RemoteName
-	equal = equal && c.Section == other.Section
-	equal = equal && c.TLSCertificate == other.TLSCertificate
-	equal = equal && c.TLSKey == other.TLSKey
-	equal = equal && c.TLSCA == other.TLSCA
-	equal = equal && c.TLSSkipVerify == other.TLSSkipVerify
-	equal = equal && strings.Join(c.Source, ":") == strings.Join(other.Source, ":")
-	equal = equal && strings.Join(c.Flags, ":") == strings.Join(other.Flags, ":")
-	return equal
-}
-
-// Config defines the available configuration options from supplied config files.
-type Config struct {
-	Listen                 []string
-	Nodes                  []string
-	TLSCertificate         string
-	TLSKey                 string
-	TLSClientPems          []string
-	Updateinterval         int64
-	FullUpdateInterval     int64
-	Connections            []Connection
-	LogFile                string
-	LogLevel               string
-	LogSlowQueryThreshold  int
-	LogHugeQueryThreshold  int
-	ConnectTimeout         int
-	NetTimeout             int
-	ListenTimeout          int
-	SaveTempRequests       bool
-	ListenPrometheus       string
-	SkipSSLCheck           int
-	IdleTimeout            int64
-	IdleInterval           int64
-	StaleBackendTimeout    int
-	BackendKeepAlive       bool
-	ServiceAuthorization   string
-	GroupAuthorization     string
-	SyncIsExecuting        bool
-	CompressionMinimumSize int
-	CompressionLevel       int
-	MaxClockDelta          float64
-	UpdateOffset           int64
-}
 
 // PeerMap contains a map of available remote peers.
 var PeerMap map[string]*Peer
@@ -156,25 +104,6 @@ var Listeners map[string]*Listener
 
 // ListenersLock is the lock for the Listeners map
 var ListenersLock *deadlock.RWMutex
-
-type configFiles []string
-
-// String returns the config files list as string.
-func (c *configFiles) String() string {
-	return fmt.Sprintf("%s", *c)
-}
-
-// Set appends a config file to the list of config files.
-func (c *configFiles) Set(value string) (err error) {
-	_, err = os.Stat(value)
-	// check if the file exists but skip errors for file globs
-	if err != nil && !strings.ContainsAny(value, "?*") {
-		return
-	}
-	err = nil
-	*c = append(*c, value)
-	return
-}
 
 // nodeAccessor manages cluster nodes and starts/stops peers.
 var nodeAccessor *Nodes
@@ -240,7 +169,7 @@ func setFlags() {
 	flag.StringVar(&flagCPUProfile, "cpuprofile", "", "write cpu profile to `file`")
 	flag.StringVar(&flagMemProfile, "memprofile", "", "write memory profile to `file`")
 	flag.IntVar(&flagDeadlock, "debug-deadlock", 0, "enable deadlock detection with given timeout")
-	flag.Var(&flagCfgOption, "o", "write memory profile to `file`")
+	flag.Var(&flagCfgOption, "o", "override settings, ex.: -o Listen=:3333 -o Connections=name,address")
 }
 
 func main() {
@@ -265,13 +194,13 @@ func main() {
 }
 
 func mainLoop(mainSignalChannel chan os.Signal, initChannel chan bool) (exitCode int) {
-	localConfig := *(ReadConfig(flagConfigFile))
-	applyArgFlags(flagCfgOption, &localConfig)
-	setDefaults(&localConfig)
-	setVerboseFlags(&localConfig)
-	InitLogging(&localConfig)
-	setServiceAuthorization(&localConfig)
-	setGroupAuthorization(&localConfig)
+	localConfig := NewConfig(flagConfigFile)
+	applyArgFlags(flagCfgOption, localConfig)
+	localConfig.ValidateConfig()
+	ApplyFlags(localConfig)
+	InitLogging(localConfig)
+	localConfig.SetServiceAuthorization()
+	localConfig.SetGroupAuthorization()
 
 	CompressionLevel = localConfig.CompressionLevel
 	CompressionMinimumSize = localConfig.CompressionMinimumSize
@@ -314,19 +243,30 @@ func mainLoop(mainSignalChannel chan os.Signal, initChannel chan bool) (exitCode
 	}
 
 	once.Do(PrintVersion)
-	logConfig(&localConfig)
+	localConfig.LogConfig()
 
 	// initialize prometheus
-	prometheusListener := initPrometheus(&localConfig)
+	prometheusListener := initPrometheus(localConfig)
+
+	var qStat *QueryStats
+	if localConfig.LogQueryStats {
+		log.Debugf("query stats enabled")
+		qStat = NewQueryStats()
+	}
 
 	// start local listeners
-	initializeListeners(&localConfig, waitGroupListener, waitGroupInit, shutdownChannel)
+	initializeListeners(localConfig, waitGroupListener, waitGroupInit, qStat)
 
 	// start remote connections
-	initializePeers(&localConfig, waitGroupPeers, waitGroupInit, shutdownChannel)
+	initializePeers(localConfig, waitGroupPeers, waitGroupInit, shutdownChannel)
 
 	if initChannel != nil {
 		initChannel <- true
+	}
+
+	// make garbagabe collectore more aggressive
+	if os.Getenv("GOGC") == "" {
+		debug.SetGCPercent(GCPercentage)
 	}
 
 	// just wait till someone hits ctrl+c or we have to reload
@@ -334,14 +274,29 @@ func mainLoop(mainSignalChannel chan os.Signal, initChannel chan bool) (exitCode
 	for {
 		select {
 		case sig := <-osSignalChannel:
-			return mainSignalHandler(sig, shutdownChannel, waitGroupPeers, waitGroupListener, prometheusListener)
+			return mainSignalHandler(sig, shutdownChannel, waitGroupPeers, waitGroupListener, prometheusListener, qStat)
 		case sig := <-osSignalUsrChannel:
-			mainSignalHandler(sig, shutdownChannel, waitGroupPeers, waitGroupListener, prometheusListener)
+			mainSignalHandler(sig, shutdownChannel, waitGroupPeers, waitGroupListener, prometheusListener, qStat)
 		case sig := <-mainSignalChannel:
-			return mainSignalHandler(sig, shutdownChannel, waitGroupPeers, waitGroupListener, prometheusListener)
+			return mainSignalHandler(sig, shutdownChannel, waitGroupPeers, waitGroupListener, prometheusListener, qStat)
 		case <-statsTimer.C:
-			updateStatistics()
+			updateStatistics(qStat)
 		}
+	}
+}
+
+func ApplyFlags(conf *Config) {
+	if flagLogFile != "" {
+		conf.LogFile = flagLogFile
+	}
+	if flagVerbose {
+		conf.LogLevel = "Info"
+	}
+	if flagVeryVerbose {
+		conf.LogLevel = "Debug"
+	}
+	if flagTraceVerbose {
+		conf.LogLevel = "Trace"
 	}
 }
 
@@ -350,7 +305,7 @@ func Version() string {
 	return fmt.Sprintf("%s (Build: %s, %s)", VERSION, Build, runtime.Version())
 }
 
-func initializeListeners(localConfig *Config, waitGroupListener *sync.WaitGroup, waitGroupInit *sync.WaitGroup, shutdownChannel chan bool) {
+func initializeListeners(localConfig *Config, waitGroupListener *sync.WaitGroup, waitGroupInit *sync.WaitGroup, qStat *QueryStats) {
 	ListenersNew := make(map[string]*Listener)
 
 	// close all listeners which are no longer defined
@@ -365,19 +320,20 @@ func initializeListeners(localConfig *Config, waitGroupListener *sync.WaitGroup,
 		}
 		if !found {
 			delete(Listeners, con)
-			l.connection.Close()
+			l.Connection.Close()
 		}
 	}
 
 	// open new listeners
 	for _, listen := range localConfig.Listen {
 		if l, ok := Listeners[listen]; ok {
-			l.shutdownChannel = shutdownChannel
+			l.Lock.Lock()
 			l.GlobalConfig = localConfig
+			l.Lock.Unlock()
 			ListenersNew[listen] = l
 		} else {
 			waitGroupInit.Add(1)
-			l := NewListener(localConfig, listen, waitGroupInit, waitGroupListener, shutdownChannel)
+			l := NewListener(localConfig, listen, waitGroupInit, waitGroupListener, qStat)
 			ListenersNew[listen] = l
 		}
 	}
@@ -432,6 +388,7 @@ func initializePeers(localConfig *Config, waitGroupPeers *sync.WaitGroup, waitGr
 				p.waitGroup = waitGroupPeers
 				p.shutdownChannel = shutdownChannel
 				p.GlobalConfig = localConfig
+				p.SetHTTPClient()
 				p.Lock.Unlock()
 			}
 		}
@@ -513,11 +470,6 @@ func checkFlags() {
 		deadlock.Opts.LogBuf = NewLogWriter("Error")
 	}
 
-	if len(flagConfigFile) == 0 {
-		fmt.Print("ERROR: no config files specified.\nSee --help for all options.\n")
-		os.Exit(ExitCritical)
-	}
-
 	createPidFile(flagPidfile)
 }
 
@@ -562,24 +514,16 @@ func deletePidFile(f string) {
 	}
 }
 
-func onExit() {
+func onExit(qStat *QueryStats) {
 	deletePidFile(flagPidfile)
+	if qStat != nil {
+		close(qStat.In)
+		qStat = nil
+	}
 	if flagCPUProfile != "" {
 		pprof.StopCPUProfile()
 		cpuProfileHandler.Close()
 		log.Warnf("cpu profile written to: %s", flagCPUProfile)
-	}
-}
-
-func setVerboseFlags(localConfig *Config) {
-	if flagVerbose {
-		localConfig.LogLevel = "Info"
-	}
-	if flagVeryVerbose {
-		localConfig.LogLevel = "Debug"
-	}
-	if flagTraceVerbose {
-		localConfig.LogLevel = "Trace"
 	}
 }
 
@@ -595,6 +539,18 @@ func applyArgFlags(opts arrayFlags, localConfig *Config) {
 		}
 		optname := tmp[0]
 		optvalue := tmp[1]
+		if strings.EqualFold(optname, "connections") {
+			conVal := strings.SplitN(optvalue, ",", 2)
+			if len(conVal) < 2 {
+				log.Fatalf("ERROR: cannot parse connection, syntax is '-o Connection=name,address'")
+			}
+			con := Connection{
+				Name:   conVal[0],
+				Source: []string{conVal[1]},
+			}
+			localConfig.Connections = append(localConfig.Connections, con)
+			continue
+		}
 		found := false
 		for i := 0; i < s.NumField(); i++ {
 			cfgname := typeOfS.Field(i).Name
@@ -608,6 +564,9 @@ func applyArgFlags(opts arrayFlags, localConfig *Config) {
 						f.SetString(optvalue)
 					case reflect.Bool:
 						f.SetBool(interface2bool(optvalue))
+					case reflect.Slice:
+						v := interface2string(optvalue)
+						f.Set(reflect.Append(f, reflect.ValueOf(*v)))
 					default:
 						log.Fatalf("ERROR: cannot set option %s, type %s is not supported", cfgname, f.Kind())
 					}
@@ -661,31 +620,41 @@ func NewLMDHTTPClient(tlsConfig *tls.Config, proxy string) *http.Client {
 	return netClient
 }
 
-func mainSignalHandler(sig os.Signal, shutdownChannel chan bool, waitGroupPeers *sync.WaitGroup, waitGroupListener *sync.WaitGroup, prometheusListener io.Closer) (exitCode int) {
+func mainSignalHandler(sig os.Signal, shutdownChannel chan bool, waitGroupPeers *sync.WaitGroup, waitGroupListener *sync.WaitGroup, prometheusListener io.Closer, qStat *QueryStats) (exitCode int) {
 	switch sig {
 	case syscall.SIGTERM:
 		log.Infof("got sigterm, quiting gracefully")
-		shutdownChannel <- true
 		close(shutdownChannel)
+		ListenersLock.Lock()
+		for con, l := range Listeners {
+			delete(Listeners, con)
+			l.Connection.Close()
+		}
+		ListenersLock.Unlock()
 		if prometheusListener != nil {
 			prometheusListener.Close()
 		}
 		waitGroupListener.Wait()
 		waitGroupPeers.Wait()
-		onExit()
+		onExit(qStat)
 		return (0)
 	case syscall.SIGINT:
 		fallthrough
 	case os.Interrupt:
 		log.Infof("got sigint, quitting")
-		shutdownChannel <- true
 		close(shutdownChannel)
+		ListenersLock.Lock()
+		for con, l := range Listeners {
+			delete(Listeners, con)
+			l.Connection.Close()
+		}
+		ListenersLock.Unlock()
 		if prometheusListener != nil {
 			prometheusListener.Close()
 		}
 		// wait one second which should be enough for the listeners
 		waitTimeout(waitGroupListener, time.Second)
-		onExit()
+		onExit(qStat)
 		return (1)
 	case syscall.SIGHUP:
 		log.Infof("got sighup, reloading configuration...")
@@ -749,144 +718,9 @@ func waitTimeout(wg *sync.WaitGroup, timeout time.Duration) bool {
 	}
 }
 
-func setDefaults(conf *Config) {
-	if conf.NetTimeout <= 0 {
-		conf.NetTimeout = 120
-	}
-	if conf.ConnectTimeout <= 0 {
-		conf.ConnectTimeout = 30
-	}
-	if conf.ListenTimeout <= 0 {
-		conf.ListenTimeout = 60
-	}
-	if conf.Updateinterval <= 0 {
-		conf.Updateinterval = 7
-	}
-	if conf.FullUpdateInterval <= 0 {
-		conf.FullUpdateInterval = 0
-	}
-	if conf.IdleInterval <= 0 {
-		conf.IdleInterval = 1800
-	}
-	if conf.IdleTimeout <= 0 {
-		conf.IdleTimeout = 120
-	}
-	if conf.StaleBackendTimeout <= 0 {
-		conf.StaleBackendTimeout = 30
-	}
-	if conf.LogSlowQueryThreshold <= 0 {
-		conf.LogSlowQueryThreshold = 5
-	}
-	if conf.LogHugeQueryThreshold <= 0 {
-		conf.LogHugeQueryThreshold = 100
-	}
-	if conf.CompressionMinimumSize <= 0 {
-		conf.CompressionMinimumSize = 500
-	}
-	if conf.MaxClockDelta < 0 {
-		conf.MaxClockDelta = 10
-	}
-	if conf.UpdateOffset <= 0 {
-		conf.UpdateOffset = 3
-	}
-}
-
-func setServiceAuthorization(conf *Config) {
-	ServiceAuth := strings.ToLower(conf.ServiceAuthorization)
-	switch {
-	case ServiceAuth == AuthLoose, ServiceAuth == AuthStrict:
-		conf.ServiceAuthorization = ServiceAuth
-	case ServiceAuth != "":
-		log.Warnf("Invalid ServiceAuthorization: %s, using loose", conf.ServiceAuthorization)
-		conf.ServiceAuthorization = AuthLoose
-	default:
-		conf.ServiceAuthorization = AuthLoose
-	}
-}
-
-func setGroupAuthorization(conf *Config) {
-	GroupAuth := strings.ToLower(conf.GroupAuthorization)
-	switch {
-	case GroupAuth == AuthLoose, GroupAuth == AuthStrict:
-		conf.GroupAuthorization = GroupAuth
-	case GroupAuth != "":
-		log.Warnf("Invalid GroupAuthorization: %s, using strict", conf.GroupAuthorization)
-		conf.GroupAuthorization = AuthStrict
-	default:
-		conf.GroupAuthorization = AuthStrict
-	}
-}
-
 // PrintVersion prints the version
 func PrintVersion() {
 	fmt.Printf("%s - version %s started with config %s\n", NAME, Version(), flagConfigFile)
-}
-
-// ReadConfig reads all config files.
-// It returns a Config object.
-func ReadConfig(files []string) *Config {
-	// combine listeners from all files
-	allListeners := make([]string, 0)
-	conf := &Config{
-		BackendKeepAlive:       true,
-		SaveTempRequests:       true,
-		CompressionLevel:       -1,
-		CompressionMinimumSize: DefaultCompressionMinimumSize,
-	}
-	for _, pattern := range files {
-		configFiles, errGlob := filepath.Glob(pattern)
-		if errGlob != nil {
-			fmt.Fprintf(os.Stderr, "ERROR: config file pattern %s is invalid: %s\n", pattern, errGlob.Error())
-			os.Exit(ExitUnknown)
-		}
-		if configFiles == nil {
-			log.Debugf("config file pattern %s did not match any files", pattern)
-			continue
-		}
-		for _, configFile := range configFiles {
-			if _, err := os.Stat(configFile); err != nil {
-				fmt.Fprintf(os.Stderr, "ERROR: could not load configuration from %s: %s\nuse --help to see all options.\n", configFile, err.Error())
-				os.Exit(ExitUnknown)
-			}
-			if _, err := toml.DecodeFile(configFile, &conf); err != nil {
-				panic(err)
-			}
-			allListeners = append(allListeners, conf.Listen...)
-			conf.Listen = []string{}
-		}
-	}
-	if flagLogFile != "" {
-		conf.LogFile = flagLogFile
-	}
-	conf.Listen = allListeners
-
-	for i := range conf.Connections {
-		for j := range conf.Connections[i].Source {
-			if strings.HasPrefix(conf.Connections[i].Source[j], "http") {
-				conf.Connections[i].Source[j] = completePeerHTTPAddr(conf.Connections[i].Source[j])
-			}
-		}
-	}
-
-	return conf
-}
-
-func logConfig(conf *Config) {
-	// print command line arguments
-	arg, _ := jsoniter.MarshalIndent(os.Args, "", "  ")
-	cfg, _ := jsoniter.MarshalIndent(*conf, "", "  ")
-
-	log.Debug("command line arguments:")
-	for _, s := range strings.Split(string(arg), "\n") {
-		log.Debugf("args: %s", s)
-	}
-
-	replaceAuth := regexp.MustCompile(`"Auth": ".*",`)
-	log.Debug("effective configuration:")
-	for _, s := range strings.Split(string(cfg), "\n") {
-		s = replaceAuth.ReplaceAllString(s, `"Auth": "***",`)
-		log.Debugf("conf: %s", s)
-	}
 }
 
 func logPanicExit() {
@@ -941,16 +775,29 @@ func ByteCountBinary(b int64) string {
 	return fmt.Sprintf("%.1f%ciB", float64(b)/float64(div), "KMGTPE"[exp])
 }
 
-func updateStatistics() {
+func updateStatistics(qStat *QueryStats) {
 	size := stringdedup.Size()
 	promStringDedupCount.Set(float64(size))
 	promStringDedupBytes.Set(float64(stringdedup.ByteCount()))
 	promStringDedupIndexBytes.Set(float64(32 * size))
+	if qStat != nil {
+		qStat.LogTrigger <- true
+	}
 }
 
-func getMinimalTLSConfig() *tls.Config {
+func getMinimalTLSConfig(localConfig *Config) *tls.Config {
 	config := &tls.Config{
-		MinVersion: tls.VersionTLS12,
+		InsecureSkipVerify: localConfig.SkipSSLCheck > 0,
+	}
+	if localConfig.TLSMinVersion != "" {
+		tlsMinVersion, err := parseTLSMinVersion(localConfig.TLSMinVersion)
+		if err != nil {
+			config.MinVersion = tlsMinVersion
+		}
 	}
 	return (config)
+}
+
+func fmtHTTPerr(req *http.Request, err error) string {
+	return (fmt.Sprintf("%s: %v", req.URL.String(), err))
 }

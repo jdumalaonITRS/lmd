@@ -64,7 +64,12 @@ Installation
     %> go get -u github.com/sni/lmd/lmd
 ```
 
-Copy lmd.ini.example to lmd.ini and change to your needs. Then run lmd.
+Quick start with command line parameters:
+```
+    lmd -o listen=:3333 -o connection=test,remote_host:6557
+```
+
+Or copy lmd.ini.example to lmd.ini and change to your needs. Then run lmd.
 You can specify the path to your config file with `--config`.
 
 ```
@@ -134,6 +139,7 @@ some more extra meta data:
     - columns: the column names (if requested)
     - data: the original result.
     - total_count: the number of matches in the result set _before_ the limit and offset applied.
+    - rows_scanned: the number of data rows scanned to produce the result set.
     - failed: a hash of backends which have errored for some reason.
 
 ### Response Header ###
@@ -186,7 +192,9 @@ ex.:
   - peer_name: name of the backend where this object belongs too (all tables)
   - has_long_plugin_output: flag if there is long_plugin_output or not (hosts/services table)
 
+### Additional Tables ###
 
+  - sites: list of connected backends
 
 Resource Usage
 ==============
@@ -205,6 +213,34 @@ bandwith, you just have to update many services every 30 seconds than small
 packages every 3 seconds.
 
 
+Debugging
+=========
+
+LMD can be started with a golang tcp debug profiler:
+```
+lmd -config lmd.ini -debug-profiler localhost:6060
+```
+
+You can then fetch memory heap profile with:
+```
+curl http://localhost:6060/debug/pprof/heap --output heap.tar.gz
+```
+or directly run the profiler from go:
+```
+go tool pprof -web http://localhost:6060/debug/pprof/heap
+```
+
+Accordingly cpu profile can be created by:
+```
+curl http://localhost:6060/debug/pprof/profile --output cpu.tar.gz
+```
+
+Those profiles can then be further processed by gos pprof tool:
+```
+go tool pprof cpu.tar.gz
+```
+
+
 Ideas
 =====
 
@@ -214,5 +250,3 @@ Some ideas may or may not be implemented in the future
   This is implemented for log table and commands anyway already. Just requires an additional header.
 - Cache last 24h of logfiles to speed up most logfile requests
 - Fix updating comments (takes too long after sending commands)
-- Make use of lmd_last_cache_update in federation mode
-- deduplicate large stringlists like contacts, maybe hostgroups and servicegroups

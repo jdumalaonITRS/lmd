@@ -21,6 +21,7 @@ const (
 	Average // avg
 	Min     // min
 	Max     // max
+	StatsGroup
 )
 
 const RegexDotMinSize = 4
@@ -39,7 +40,7 @@ func (op *StatsType) String() string {
 	case Max:
 		return "Max"
 	default:
-		log.Panicf("not implemented")
+		log.Panicf("not implemented: %#v", op)
 	}
 	return ""
 }
@@ -65,6 +66,7 @@ type Filter struct {
 	Stats      float64
 	StatsCount int
 	StatsType  StatsType
+	StatsPos   int // position in stats result array
 
 	// copy of Column.Optional
 	ColumnOptional OptionalFlags
@@ -149,12 +151,14 @@ func (op *Operator) String() string {
 
 // String converts a filter back to its string representation.
 func (f *Filter) String(prefix string) (str string) {
-	if len(f.Filter) > 0 {
-		for i := range f.Filter {
-			str += f.Filter[i].String(prefix)
+	if f.GroupOperator == And || f.GroupOperator == Or {
+		if len(f.Filter) > 0 {
+			for i := range f.Filter {
+				str += f.Filter[i].String(prefix)
+			}
+			str += fmt.Sprintf("%s%s: %d\n", prefix, f.GroupOperator.String(), len(f.Filter))
+			return
 		}
-		str += fmt.Sprintf("%s%s: %d\n", prefix, f.GroupOperator.String(), len(f.Filter))
-		return
 	}
 
 	strVal := f.strValue()
@@ -171,6 +175,11 @@ func (f *Filter) String(prefix string) (str string) {
 			prefix = "Filter"
 		}
 		str = fmt.Sprintf("%s: %s %s%s\n", prefix, colName, f.Operator.String(), strVal)
+	case StatsGroup:
+		if prefix == "" {
+			prefix = "Filter"
+		}
+		str = fmt.Sprintf("%sGroup: %s %s%s\n", prefix, colName, f.Operator.String(), strVal)
 	case Counter:
 		str = fmt.Sprintf("Stats: %s %s%s\n", colName, f.Operator.String(), strVal)
 	default:
@@ -180,6 +189,40 @@ func (f *Filter) String(prefix string) (str string) {
 		str += fmt.Sprintf("%s\n", "Negate:")
 	}
 	return
+}
+
+// Equals returns true if both filter are exactly identical
+func (f *Filter) Equals(o *Filter) bool {
+	if f.Column != o.Column {
+		return false
+	}
+	if f.Operator != o.Operator {
+		return false
+	}
+	if f.StrValue != o.StrValue {
+		return false
+	}
+	if f.Negate != o.Negate {
+		return false
+	}
+	if f.FloatValue != o.FloatValue {
+		return false
+	}
+	if f.StatsType != o.StatsType {
+		return false
+	}
+	if f.GroupOperator != o.GroupOperator {
+		return false
+	}
+	if len(f.Filter) != len(o.Filter) {
+		return false
+	}
+	for i := range f.Filter {
+		if !f.Filter[i].Equals(o.Filter[i]) {
+			return false
+		}
+	}
+	return true
 }
 
 func (f *Filter) strValue() string {
@@ -504,8 +547,8 @@ func ParseStats(value []byte, table TableName, stack *[]*Filter, options ParseOp
 	columnName := string(tmp[1])
 	col := Objects.Tables[table].ColumnsIndex[columnName]
 	if col == nil {
-		err = fmt.Errorf("unrecognized column from stats: %s", columnName)
-		return
+		t := Objects.Tables[table]
+		col = t.GetColumnWithFallback(columnName)
 	}
 	stats := &Filter{
 		Column:     col,
@@ -546,14 +589,13 @@ func ParseFilterOp(op GroupOperator, value []byte, stack *[]*Filter) (err error)
 }
 
 // ParseFilterNegate sets the last filter group to be negated
-func ParseFilterNegate(stack *[]*Filter) (err error) {
-	stackLen := len(*stack)
+func ParseFilterNegate(stack []*Filter) (err error) {
+	stackLen := len(stack)
 	if stackLen == 0 {
 		err = fmt.Errorf("no filter on stack to negate")
 		return
 	}
-	filter := (*stack)[stackLen-1]
-	filter.Negate = true
+	stack[stackLen-1].Negate = true
 	return
 }
 
@@ -582,7 +624,7 @@ func (f *Filter) Match(row *DataRow) bool {
 	case Int64ListCol:
 		return f.MatchInt64List(row.GetInt64List(f.Column))
 	case CustomVarCol:
-		return f.MatchCustomVar(row.GetHashMap(f.Column))
+		return f.MatchString(row.GetCustomVarValue(f.Column, f.CustomTag))
 	case InterfaceListCol, ServiceMemberListCol:
 		// not implemented
 		return false
@@ -608,7 +650,7 @@ func (f *Filter) MatchInt(value int) bool {
 		return value >= intVal
 	}
 	strVal := fmt.Sprintf("%v", value)
-	return f.MatchString(&strVal)
+	return f.MatchString(strVal)
 }
 
 func (f *Filter) MatchInt64(value int64) bool {
@@ -628,7 +670,7 @@ func (f *Filter) MatchInt64(value int64) bool {
 		return value >= intVal
 	}
 	strVal := fmt.Sprintf("%v", value)
-	return f.MatchString(&strVal)
+	return f.MatchString(strVal)
 }
 
 func (f *Filter) MatchFloat(value float64) bool {
@@ -647,7 +689,7 @@ func (f *Filter) MatchFloat(value float64) bool {
 		return value >= f.FloatValue
 	}
 	strVal := fmt.Sprintf("%v", value)
-	return f.MatchString(&strVal)
+	return f.MatchString(strVal)
 }
 
 func matchEmptyFilter(op Operator) bool {
@@ -669,77 +711,77 @@ func matchEmptyFilter(op Operator) bool {
 	return false
 }
 
-func (f *Filter) MatchString(value *string) bool {
+func (f *Filter) MatchString(value string) bool {
 	switch f.Operator {
 	case Equal:
-		return *value == f.StrValue
+		return value == f.StrValue
 	case Unequal:
-		return *value != f.StrValue
+		return value != f.StrValue
 	case EqualNocase:
-		return strings.EqualFold(*value, f.StrValue)
+		return strings.EqualFold(value, f.StrValue)
 	case UnequalNocase:
-		return !strings.EqualFold(*value, f.StrValue)
+		return !strings.EqualFold(value, f.StrValue)
 	case RegexMatch, RegexNoCaseMatch:
-		return f.Regexp.MatchString(*value)
+		return f.Regexp.MatchString(value)
 	case RegexMatchNot, RegexNoCaseMatchNot:
-		return !f.Regexp.MatchString(*value)
+		return !f.Regexp.MatchString(value)
 	case Less:
-		return *value < f.StrValue
+		return value < f.StrValue
 	case LessThan:
-		return *value <= f.StrValue
+		return value <= f.StrValue
 	case Greater:
-		return *value > f.StrValue
+		return value > f.StrValue
 	case GreaterThan:
-		return *value >= f.StrValue
+		return value >= f.StrValue
 	case Contains:
-		return strings.Contains(*value, f.StrValue)
+		return strings.Contains(value, f.StrValue)
 	case ContainsNot:
-		return !strings.Contains(*value, f.StrValue)
+		return !strings.Contains(value, f.StrValue)
 	case ContainsNoCase:
-		return strings.Contains(strings.ToLower(*value), f.StrValue)
+		return strings.Contains(strings.ToLower(value), f.StrValue)
 	case ContainsNoCaseNot:
-		return !strings.Contains(strings.ToLower(*value), f.StrValue)
+		return !strings.Contains(strings.ToLower(value), f.StrValue)
 	}
 	log.Warnf("not implemented string op: %s", f.Operator.String())
 	return false
 }
 
-func (f *Filter) MatchStringList(list *[]string) bool {
+func (f *Filter) MatchStringList(list []string) bool {
 	switch f.Operator {
 	case Equal:
 		// used to match for empty lists, like: contacts = ""
 		// return true if the list is empty
-		return f.StrValue == "" && len(*list) == 0
+		return f.StrValue == "" && len(list) == 0
 	case Unequal:
 		// used to match for any entry in lists, like: contacts != ""
 		// return true if the list is not empty
-		return f.StrValue == "" && len(*list) != 0
+		return f.StrValue == "" && len(list) != 0
 	case GreaterThan:
-		for i := range *list {
-			if f.StrValue == (*list)[i] {
+		for _, v := range list {
+			if f.StrValue == v {
 				return true
 			}
 		}
 		return false
 	case GroupContainsNot:
-		for i := range *list {
-			if f.StrValue == (*list)[i] {
+		for _, v := range list {
+			if f.StrValue == v {
 				return false
 			}
 		}
 		return true
 	case RegexMatch, RegexNoCaseMatch, Contains, ContainsNoCase:
-		for i := range *list {
-			if f.MatchString(&(*list)[i]) {
+		for _, v := range list {
+			if f.MatchString(v) {
 				return true
 			}
 		}
 		return false
 	case RegexMatchNot, RegexNoCaseMatchNot, ContainsNot, ContainsNoCaseNot:
-		for i := range *list {
+		for _, v := range list {
 			// MatchString takes operator into account, so negate the result
 			// so if it returns false it means the value has been found
-			if !f.MatchString(&(*list)[i]) {
+			if !f.MatchString(v) {
 				return false
 			}
 		}
@@ -781,7 +823,7 @@ func (f *Filter) MatchCustomVar(value map[string]string) bool {
 	if !ok {
 		val = ""
 	}
-	return f.MatchString(&val)
+	return f.MatchString(val)
 }
 
 // some broken clients request <table>_column instead of just column

@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"fmt"
 	"io/ioutil"
 	"os"
@@ -21,10 +22,10 @@ func TestMainFunc(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = assertEq("peer_key", (*res)[0][0]); err != nil {
+	if err = assertEq("peer_key", res[0][0]); err != nil {
 		t.Fatal(err)
 	}
-	if err = assertEq("mockid0", (*res)[1][0]); err != nil {
+	if err = assertEq("mockid0", res[1][0]); err != nil {
 		t.Fatal(err)
 	}
 
@@ -48,10 +49,10 @@ func TestMainFunc(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err = assertEq("peer_key", (*res)[0][0]); err != nil {
+		if err = assertEq("peer_key", res[0][0]); err != nil {
 			t.Fatal(err)
 		}
-		if err = assertEq("mockid0", (*res)[1][0]); err != nil {
+		if err = assertEq("mockid0", res[1][0]); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -61,7 +62,7 @@ func TestMainFunc(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = assertEq("mockid0", (*res)[0][0]); err != nil {
+	if err = assertEq("mockid0", res[0][0]); err != nil {
 		t.Fatal(err)
 	}
 
@@ -70,7 +71,7 @@ func TestMainFunc(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = assertEq(1.0, (*res)[0][0]); err != nil {
+	if err = assertEq(1.0, res[0][0]); err != nil {
 		t.Fatal(err)
 	}
 
@@ -90,15 +91,16 @@ func TestMainReload(_ *testing.T) {
 	mainSignalChannel <- syscall.SIGHUP
 	waitTimeout(TestPeerWaitGroup, 5*time.Second)
 	// shutdown all peers
-	for _, p := range PeerMap {
+	for id := range PeerMap {
+		p := PeerMap[id]
 		p.Stop()
-		p.shutdownChannel <- true
+		close(p.shutdownChannel)
 		PeerMapRemove(p.ID)
 	}
 	// shutdown all listeners
 	ListenersLock.Lock()
 	for _, l := range Listeners {
-		l.connection.Close()
+		l.Connection.Close()
 	}
 	ListenersLock.Unlock()
 	waitTimeout(TestPeerWaitGroup, 5*time.Second)
@@ -133,7 +135,7 @@ func TestAllOps(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, row := range *res {
+	for _, row := range res {
 		if row[2].(string) == "" {
 			t.Fatalf("got no description for %s in %s", row[1].(string), row[0].(string))
 		}
@@ -173,7 +175,7 @@ func testqueryCol(t *testing.T, peer *Peer, table TableName, column string) {
 		}
 	}()
 	buf := bufio.NewReader(bytes.NewBufferString(query))
-	req, _, err := NewRequest(buf, ParseDefault)
+	req, _, err := NewRequest(context.TODO(), buf, ParseDefault)
 	if err == nil {
 		if err = assertEq(query, req.String()); err != nil {
 			t.Fatal(err)
@@ -201,7 +203,7 @@ func testqueryFilter(t *testing.T, peer *Peer, table TableName, column, op, valu
 		}
 	}()
 	buf := bufio.NewReader(bytes.NewBufferString(query))
-	req, _, err := NewRequest(buf, ParseDefault)
+	req, _, err := NewRequest(context.TODO(), buf, ParseDefault)
 	if err == nil {
 		if err = assertEq(query, req.String()); err != nil {
 			t.Fatal(err)
@@ -209,7 +211,7 @@ func testqueryFilter(t *testing.T, peer *Peer, table TableName, column, op, valu
 	}
 	_, _, err = peer.QueryString(query)
 	if err != nil {
-		logDebugError(err)
+		LogErrors(err)
 	}
 }
 
@@ -229,7 +231,7 @@ func testqueryGroup(t *testing.T, peer *Peer, table TableName, column, op, value
 		}
 	}()
 	buf := bufio.NewReader(bytes.NewBufferString(query))
-	req, _, err := NewRequest(buf, ParseDefault)
+	req, _, err := NewRequest(context.TODO(), buf, ParseDefault)
 	if err == nil {
 		if err = assertEq(query, req.String()); err != nil {
 			t.Fatal(err)
@@ -237,7 +239,7 @@ func testqueryGroup(t *testing.T, peer *Peer, table TableName, column, op, value
 	}
 	_, _, err = peer.QueryString(query)
 	if err != nil {
-		logDebugError(err)
+		LogErrors(err)
 	}
 }
 
@@ -290,12 +292,12 @@ func TestMainConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	conf := ReadConfig([]string{"test1.ini"})
+	conf := NewConfig([]string{"test1.ini"})
 	if err := assertEq(len(conf.Listen), 0); err != nil {
 		t.Error(err)
 	}
 
-	conf = ReadConfig([]string{"test1.ini", "test2.ini"})
+	conf = NewConfig([]string{"test1.ini", "test2.ini"})
 	if err := assertEq(len(conf.Listen), 1); err != nil {
 		t.Error(err)
 	}
@@ -303,7 +305,7 @@ func TestMainConfig(t *testing.T) {
 		t.Error(err)
 	}
 
-	conf = ReadConfig([]string{"test1.ini", "test2.ini", "test3.ini"})
+	conf = NewConfig([]string{"test1.ini", "test2.ini", "test3.ini"})
 	if err := assertEq(len(conf.Listen), 2); err != nil {
 		t.Error(err)
 	}

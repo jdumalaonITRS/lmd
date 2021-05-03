@@ -3,10 +3,10 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net"
-	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -43,7 +43,7 @@ func TestRequestHeader(t *testing.T) {
 	}
 	for _, str := range testRequestStrings {
 		buf := bufio.NewReader(bytes.NewBufferString(str))
-		req, _, err := NewRequest(buf, ParseDefault)
+		req, _, err := NewRequest(context.TODO(), buf, ParseDefault)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -55,7 +55,7 @@ func TestRequestHeader(t *testing.T) {
 
 func TestRequestHeaderTable(t *testing.T) {
 	buf := bufio.NewReader(bytes.NewBufferString("GET hosts\n"))
-	req, _, _ := NewRequest(buf, ParseOptimize)
+	req, _, _ := NewRequest(context.TODO(), buf, ParseOptimize)
 	if err := assertEq("hosts", req.Table.String()); err != nil {
 		t.Fatal(err)
 	}
@@ -63,7 +63,7 @@ func TestRequestHeaderTable(t *testing.T) {
 
 func TestRequestHeaderLimit(t *testing.T) {
 	buf := bufio.NewReader(bytes.NewBufferString("GET hosts\nLimit: 10\n"))
-	req, _, _ := NewRequest(buf, ParseOptimize)
+	req, _, _ := NewRequest(context.TODO(), buf, ParseOptimize)
 	if err := assertEq(10, *req.Limit); err != nil {
 		t.Fatal(err)
 	}
@@ -71,7 +71,7 @@ func TestRequestHeaderLimit(t *testing.T) {
 
 func TestRequestHeaderOffset(t *testing.T) {
 	buf := bufio.NewReader(bytes.NewBufferString("GET hosts\nOffset: 3\n"))
-	req, _, _ := NewRequest(buf, ParseOptimize)
+	req, _, _ := NewRequest(context.TODO(), buf, ParseOptimize)
 	if err := assertEq(3, req.Offset); err != nil {
 		t.Fatal(err)
 	}
@@ -79,14 +79,14 @@ func TestRequestHeaderOffset(t *testing.T) {
 
 func TestRequestHeaderColumns(t *testing.T) {
 	buf := bufio.NewReader(bytes.NewBufferString("GET hosts\nColumns: name state\n"))
-	req, _, _ := NewRequest(buf, ParseOptimize)
+	req, _, _ := NewRequest(context.TODO(), buf, ParseOptimize)
 	if err := assertEq([]string{"name", "state"}, req.Columns); err != nil {
 		t.Fatal(err)
 	}
 }
 
 func TestRequestHeaderSort(t *testing.T) {
-	req, _, _ := NewRequest(bufio.NewReader(bytes.NewBufferString("GET hosts\nColumns: latency state name\nSort: name desc\nSort: state asc\n")), ParseOptimize)
+	req, _, _ := NewRequest(context.TODO(), bufio.NewReader(bytes.NewBufferString("GET hosts\nColumns: latency state name\nSort: name desc\nSort: state asc\n")), ParseOptimize)
 	if err := assertEq(&SortField{Name: "name", Direction: Desc, Index: 0, Column: Objects.Tables[TableHosts].GetColumn("name")}, req.Sort[0]); err != nil {
 		t.Fatal(err)
 	}
@@ -96,7 +96,7 @@ func TestRequestHeaderSort(t *testing.T) {
 }
 
 func TestRequestHeaderSortCust(t *testing.T) {
-	req, _, _ := NewRequest(bufio.NewReader(bytes.NewBufferString("GET hosts\nColumns: name custom_variables\nSort: custom_variables TEST asc\n")), ParseOptimize)
+	req, _, _ := NewRequest(context.TODO(), bufio.NewReader(bytes.NewBufferString("GET hosts\nColumns: name custom_variables\nSort: custom_variables TEST asc\n")), ParseOptimize)
 	if err := assertEq(&SortField{Name: "custom_variables", Direction: Asc, Index: 0, Args: "TEST", Column: Objects.Tables[TableHosts].GetColumn("custom_variables")}, req.Sort[0]); err != nil {
 		t.Fatal(err)
 	}
@@ -104,7 +104,7 @@ func TestRequestHeaderSortCust(t *testing.T) {
 
 func TestRequestHeaderFilter1(t *testing.T) {
 	buf := bufio.NewReader(bytes.NewBufferString("GET hosts\nFilter: name != test\n"))
-	req, _, _ := NewRequest(buf, ParseOptimize)
+	req, _, _ := NewRequest(context.TODO(), buf, ParseOptimize)
 	if err := assertEq(len(req.Filter), 1); err != nil {
 		t.Fatal(err)
 	}
@@ -115,7 +115,7 @@ func TestRequestHeaderFilter1(t *testing.T) {
 
 func TestRequestHeaderFilter2(t *testing.T) {
 	buf := bufio.NewReader(bytes.NewBufferString("GET hosts\nFilter: state != 1\nFilter: name = with spaces \n"))
-	req, _, _ := NewRequest(buf, ParseOptimize)
+	req, _, _ := NewRequest(context.TODO(), buf, ParseOptimize)
 	if err := assertEq(len(req.Filter), 2); err != nil {
 		t.Fatal(err)
 	}
@@ -132,7 +132,7 @@ func TestRequestHeaderFilter2(t *testing.T) {
 
 func TestRequestHeaderFilter3(t *testing.T) {
 	buf := bufio.NewReader(bytes.NewBufferString("GET hosts\nFilter: state != 1\nFilter: name = with spaces\nOr: 2"))
-	req, _, _ := NewRequest(buf, ParseOptimize)
+	req, _, _ := NewRequest(context.TODO(), buf, ParseOptimize)
 	if err := assertEq(len(req.Filter), 1); err != nil {
 		t.Fatal(err)
 	}
@@ -146,7 +146,7 @@ func TestRequestHeaderFilter3(t *testing.T) {
 
 func TestRequestHeaderFilter4(t *testing.T) {
 	buf := bufio.NewReader(bytes.NewBufferString("GET hosts\nFilter: state != 1\nFilter: name = with spaces\nAnd: 2"))
-	req, _, _ := NewRequest(buf, ParseOptimize)
+	req, _, _ := NewRequest(context.TODO(), buf, ParseOptimize)
 	if err := assertEq(len(req.Filter), 2); err != nil {
 		t.Fatal(err)
 	}
@@ -166,7 +166,7 @@ func TestRequestListFilter(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := assertEq("testhost_1", (*res)[0][0]); err != nil {
+	if err := assertEq("testhost_1", res[0][0]); err != nil {
 		t.Fatal(err)
 	}
 
@@ -183,7 +183,7 @@ func TestRequestRegexIntFilter(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := assertEq(10, len(*res)); err != nil {
+	if err := assertEq(10, len(res)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -191,7 +191,7 @@ func TestRequestRegexIntFilter(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := assertEq(0, len(*res)); err != nil {
+	if err := assertEq(0, len(res)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -205,7 +205,7 @@ func TestRequestHeaderMultipleCommands(t *testing.T) {
 Backends: mockid0
 
 COMMAND [1473627610] SCHEDULE_FORCED_SVC_CHECK;demo;Web2;1473627610`))
-	req, size, err := NewRequest(buf, ParseOptimize)
+	req, size, err := NewRequest(context.TODO(), buf, ParseOptimize)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -218,7 +218,7 @@ COMMAND [1473627610] SCHEDULE_FORCED_SVC_CHECK;demo;Web2;1473627610`))
 	if err = assertEq(req.Backends[0], "mockid0"); err != nil {
 		t.Fatal(err)
 	}
-	req, size, err = NewRequest(buf, ParseOptimize)
+	req, size, err = NewRequest(context.TODO(), buf, ParseOptimize)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -257,7 +257,6 @@ func TestResponseErrorsFunc(t *testing.T) {
 		{"GET hosts\nFilter: name", "bad request: filter header must be Filter: <field> <operator> <value> in: Filter: name"},
 		{"GET hosts\nFilter: name ~~ *^", "bad request: invalid regular expression: error parsing regexp: missing argument to repetition operator: `*` in: Filter: name ~~ *^"},
 		{"GET hosts\nStats: name", "bad request: stats header, must be Stats: <field> <operator> <value> OR Stats: <sum|avg|min|max> <field> in: Stats: name"},
-		{"GET hosts\nStats: avg none", "bad request: unrecognized column from stats: none in: Stats: avg none"},
 		{"GET hosts\nFilter: name !=\nAnd: x", "bad request: And must be a positive number in: And: x"},
 		{"GET hosts\nColumns: name\nFilter: custom_variables =", "bad request: custom variable filter must have form \"Filter: custom_variables <op> <variable> [<value>]\" in: Filter: custom_variables ="},
 		{"GET hosts\nKeepalive: broke", "bad request: must be 'on' or 'off' in: Keepalive: broke"},
@@ -307,14 +306,14 @@ ResponseHeader: fixed16
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = assertEq(3, len(*res)); err != nil {
+	if err = assertEq(3, len(res)); err != nil {
 		t.Fatal(err)
 	}
 
-	if err = assertEq("testhost_7", (*res)[0][0]); err != nil {
+	if err = assertEq("testhost_7", res[0][0]); err != nil {
 		t.Error(err)
 	}
-	if err = assertEq("testsvc_1", (*res)[0][1]); err != nil {
+	if err = assertEq("testsvc_1", res[0][1]); err != nil {
 		t.Error(err)
 	}
 
@@ -335,7 +334,7 @@ func TestRequestStats(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = assertEq(40, len(*res)); err != nil {
+	if err = assertEq(40, len(res)); err != nil {
 		t.Error(err)
 	}
 
@@ -344,19 +343,19 @@ func TestRequestStats(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err = assertEq(3.346320092680001, (*res)[0][0]); err != nil {
+	if err = assertEq(3.346320092680001, res[0][0]); err != nil {
 		t.Error(err)
 	}
-	if err = assertEq(0.08365800231700002, (*res)[0][1]); err != nil {
+	if err = assertEq(0.08365800231700002, res[0][1]); err != nil {
 		t.Error(err)
 	}
-	if err = assertEq(float64(1), (*res)[0][2]); err != nil {
+	if err = assertEq(float64(1), res[0][2]); err != nil {
 		t.Error(err)
 	}
-	if err = assertEq(0.005645, (*res)[0][3]); err != nil {
+	if err = assertEq(0.005645, res[0][3]); err != nil {
 		t.Error(err)
 	}
-	if err = assertEq(float64(40), (*res)[0][4]); err != nil {
+	if err = assertEq(float64(40), res[0][4]); err != nil {
 		t.Error(err)
 	}
 
@@ -377,13 +376,13 @@ func TestRequestStatsGroupBy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = assertEq(10, len(*res)); err != nil {
+	if err = assertEq(10, len(res)); err != nil {
 		t.Error(err)
 	}
-	if err = assertEq("testhost_1", (*res)[0][0]); err != nil {
+	if err = assertEq("testhost_1", res[0][0]); err != nil {
 		t.Error(err)
 	}
-	if err = assertEq(0.083658002317, (*res)[1][1]); err != nil {
+	if err = assertEq(0.083658002317, res[1][1]); err != nil {
 		t.Error(err)
 	}
 
@@ -391,16 +390,16 @@ func TestRequestStatsGroupBy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = assertEq(10, len(*res)); err != nil {
+	if err = assertEq(10, len(res)); err != nil {
 		t.Error(err)
 	}
-	if err = assertEq("testhost_1", (*res)[0][0]); err != nil {
+	if err = assertEq("testhost_1", res[0][0]); err != nil {
 		t.Error(err)
 	}
-	if err = assertEq("testhost_1_ALIAS", (*res)[0][1]); err != nil {
+	if err = assertEq("testhost_1_ALIAS", res[0][1]); err != nil {
 		t.Error(err)
 	}
-	if err = assertEq(0.083658002317, (*res)[1][2]); err != nil {
+	if err = assertEq(0.083658002317, res[1][2]); err != nil {
 		t.Error(err)
 	}
 
@@ -417,10 +416,10 @@ func TestRequestStatsEmpty(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = assertEq(1, len(*res)); err != nil {
+	if err = assertEq(1, len(res)); err != nil {
 		t.Fatal(err)
 	}
-	if err = assertEq(float64(0), (*res)[0][0]); err != nil {
+	if err = assertEq(float64(0), res[0][0]); err != nil {
 		t.Error(err)
 	}
 
@@ -437,7 +436,61 @@ func TestRequestStatsBroken(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = assertEq(float64(0), (*res)[0][0]); err != nil {
+	if err = assertEq(float64(0), res[0][0]); err != nil {
+		t.Error(err)
+	}
+
+	if err := StopTestPeer(peer); err != nil {
+		panic(err.Error())
+	}
+}
+
+func TestRequestStatsFilter(t *testing.T) {
+	peer := StartTestPeer(4, 10, 10)
+	PauseTestPeers(peer)
+
+	if err := assertEq(4, len(PeerMap)); err != nil {
+		t.Error(err)
+	}
+
+	res, _, err := peer.QueryString("GET hosts\nColumns: name latency\n\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = assertEq(40, len(res)); err != nil {
+		t.Error(err)
+	}
+
+	res, _, err = peer.QueryString(`GET hosts
+Stats: has_been_checked = 0
+Stats: has_been_checked = 1
+Stats: state = 0
+StatsAnd: 2
+Stats: has_been_checked = 1
+Stats: state = 1
+StatsAnd: 2
+Stats: has_been_checked = 1
+Stats: state = 2
+StatsAnd: 2
+Stats: avg latency
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err = assertEq(float64(0), res[0][0]); err != nil {
+		t.Error(err)
+	}
+	if err = assertEq(float64(40), res[0][1]); err != nil {
+		t.Error(err)
+	}
+	if err = assertEq(float64(0), res[0][2]); err != nil {
+		t.Error(err)
+	}
+	if err = assertEq(float64(0), res[0][3]); err != nil {
+		t.Error(err)
+	}
+	if err = assertEq(0.08365800231700002, res[0][4]); err != nil {
 		t.Error(err)
 	}
 
@@ -454,16 +507,16 @@ func TestRequestRefs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = assertEq(1, len(*res1)); err != nil {
+	if err = assertEq(1, len(res1)); err != nil {
 		t.Error(err)
 	}
 
-	res2, _, err := peer.QueryString("GET services\nColumns: host_name host_latency host_check_command\nFilter: host_name = " + (*res1)[0][0].(string) + "\nLimit: 1\n\n")
+	res2, _, err := peer.QueryString("GET services\nColumns: host_name host_latency host_check_command\nFilter: host_name = " + res1[0][0].(string) + "\nLimit: 1\n\n")
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	if err = assertEq((*res1)[0], (*res2)[0]); err != nil {
+	if err = assertEq(res1[0], res2[0]); err != nil {
 		t.Error(err)
 	}
 
@@ -480,13 +533,13 @@ func TestRequestBrokenColumns(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = assertEq(1, len(*res)); err != nil {
+	if err = assertEq(1, len(res)); err != nil {
 		t.Fatal(err)
 	}
-	if err = assertEq("testhost_1", (*res)[0][0]); err != nil {
+	if err = assertEq("testhost_1", res[0][0]); err != nil {
 		t.Error(err)
 	}
-	if err = assertEq("testhost_1_ALIAS", (*res)[0][1]); err != nil {
+	if err = assertEq("testhost_1_ALIAS", res[0][1]); err != nil {
 		t.Error(err)
 	}
 
@@ -503,13 +556,13 @@ func TestRequestGroupByTable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = assertEq(10, len(*res)); err != nil {
+	if err = assertEq(10, len(res)); err != nil {
 		t.Fatal(err)
 	}
-	if err = assertEq("testhost_1", (*res)[0][0]); err != nil {
+	if err = assertEq("testhost_1", res[0][0]); err != nil {
 		t.Error(err)
 	}
-	if err = assertEq("127.0.0.1", (*res)[0][5]); err != nil {
+	if err = assertEq("127.0.0.1", res[0][5]); err != nil {
 		t.Error(err)
 	}
 
@@ -564,10 +617,10 @@ func TestRequestSort(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = assertEq(5, len(*res)); err != nil {
+	if err = assertEq(5, len(res)); err != nil {
 		t.Error(err)
 	}
-	if err = assertEq("testhost_4", (*res)[0][0]); err != nil {
+	if err = assertEq("testhost_4", res[0][0]); err != nil {
 		t.Error(err)
 	}
 
@@ -584,13 +637,13 @@ func TestRequestSortColumnNotRequested(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = assertEq(5, len(*res)); err != nil {
+	if err = assertEq(5, len(res)); err != nil {
 		t.Error(err)
 	}
-	if err = assertEq(3, len((*res)[0])); err != nil {
+	if err = assertEq(3, len(res[0])); err != nil {
 		t.Error(err)
 	}
-	if err = assertEq("testhost_1", (*res)[0][0]); err != nil {
+	if err = assertEq("testhost_1", res[0][0]); err != nil {
 		t.Error(err)
 	}
 
@@ -607,16 +660,16 @@ func TestRequestNoColumns(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = assertEq(2, len(*res)); err != nil {
+	if err = assertEq(2, len(res)); err != nil {
 		t.Error(err)
 	}
-	if err = assertEq(50, len((*res)[0])); err != nil {
+	if err = assertEq(50, len(res[0])); err != nil {
 		t.Error(err)
 	}
-	if err = assertEq("program_start", (*res)[0][0]); err != nil {
+	if err = assertEq("program_start", res[0][0]); err != nil {
 		t.Error(err)
 	}
-	if err = assertEq("mockid0", (*res)[1][36]); err != nil {
+	if err = assertEq("mockid0", res[1][36]); err != nil {
 		t.Error(err)
 	}
 
@@ -633,13 +686,13 @@ func TestRequestUnknownOptionalColumns(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = assertEq(1, len(*res)); err != nil {
+	if err = assertEq(1, len(res)); err != nil {
 		t.Fatal(err)
 	}
-	if err = assertEq("testhost_1", (*res)[0][0]); err != nil {
+	if err = assertEq("testhost_1", res[0][0]); err != nil {
 		t.Error(err)
 	}
-	if err = assertEq(float64(-1), (*res)[0][1]); err != nil {
+	if err = assertEq(float64(-1), res[0][1]); err != nil {
 		t.Error(err)
 	}
 
@@ -656,13 +709,13 @@ func TestRequestUnknownOptionalRefsColumns(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = assertEq(1, len(*res)); err != nil {
+	if err = assertEq(1, len(res)); err != nil {
 		t.Fatal(err)
 	}
-	if err = assertEq("testhost_1", (*res)[0][0]); err != nil {
+	if err = assertEq("testhost_1", res[0][0]); err != nil {
 		t.Error(err)
 	}
-	if err = assertEq(float64(-1), (*res)[0][1]); err != nil {
+	if err = assertEq(float64(-1), res[0][1]); err != nil {
 		t.Error(err)
 	}
 
@@ -670,7 +723,7 @@ func TestRequestUnknownOptionalRefsColumns(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = assertEq(0, len(*res)); err != nil {
+	if err = assertEq(0, len(res)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -678,7 +731,7 @@ func TestRequestUnknownOptionalRefsColumns(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = assertEq(10, len(*res)); err != nil {
+	if err = assertEq(10, len(res)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -695,10 +748,10 @@ func TestRequestColumnsWrappedJson(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = assertEq(10, len(*res)); err != nil {
+	if err = assertEq(10, len(res)); err != nil {
 		t.Error(err)
 	}
-	if err = assertEq("testhost_1", (*res)[0][0]); err != nil {
+	if err = assertEq("testhost_1", (res)[0][0]); err != nil {
 		t.Error(err)
 	}
 
@@ -708,14 +761,14 @@ func TestRequestColumnsWrappedJson(t *testing.T) {
 		t.Fatal(err)
 	}
 	var jsonTest interface{}
-	jErr := json.Unmarshal(*peer.last.Response, &jsonTest)
+	jErr := json.Unmarshal(peer.last.Response, &jsonTest)
 	if jErr != nil {
 		t.Fatal(jErr)
 	}
-	if err = assertEq(5, len(*res)); err != nil {
+	if err = assertEq(5, len(res)); err != nil {
 		t.Error(err)
 	}
-	if err = assertEq("testhost_1", (*res)[0][0]); err != nil {
+	if err = assertEq("testhost_1", res[0][0]); err != nil {
 		t.Error(err)
 	}
 	if err = assertEq(int64(10), meta.Total); err != nil {
@@ -729,14 +782,14 @@ func TestRequestColumnsWrappedJson(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	jErr = json.Unmarshal(*peer.last.Response, &jsonTest)
+	jErr = json.Unmarshal(peer.last.Response, &jsonTest)
 	if jErr != nil {
 		t.Fatal(jErr)
 	}
-	if err = assertEq(10, len(*res)); err != nil {
+	if err = assertEq(10, len(res)); err != nil {
 		t.Error(err)
 	}
-	if err = assertEq("testhost_1", (*res)[0][0]); err != nil {
+	if err = assertEq("testhost_1", res[0][0]); err != nil {
 		t.Error(err)
 	}
 
@@ -861,13 +914,13 @@ func TestRequestPassthrough(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = assertEq(3, len(*res)); err != nil {
+	if err = assertEq(3, len(res)); err != nil {
 		t.Fatal(err)
 	}
-	if err = assertEq(float64(1558468664), (*res)[0][0]); err != nil {
+	if err = assertEq(float64(1558468664), res[0][0]); err != nil {
 		t.Fatal(err)
 	}
-	if err = assertEq("HOST ALERT", (*res)[0][1]); err != nil {
+	if err = assertEq("HOST ALERT", res[0][1]); err != nil {
 		t.Fatal(err)
 	}
 
@@ -876,16 +929,16 @@ func TestRequestPassthrough(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = assertEq(3, len(*res)); err != nil {
+	if err = assertEq(3, len(res)); err != nil {
 		t.Fatal(err)
 	}
-	if err = assertEq(float64(1558468664), (*res)[0][0]); err != nil {
+	if err = assertEq(float64(1558468664), res[0][0]); err != nil {
 		t.Fatal(err)
 	}
-	if err = assertEq("mockid0", (*res)[0][1]); err != nil {
+	if err = assertEq("mockid0", res[0][1]); err != nil {
 		t.Fatal(err)
 	}
-	if err = assertEq("HOST ALERT", (*res)[0][2]); err != nil {
+	if err = assertEq("HOST ALERT", res[0][2]); err != nil {
 		t.Fatal(err)
 	}
 
@@ -915,16 +968,16 @@ func TestRequestSites(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = assertEq(6, len(*res)); err != nil {
+	if err = assertEq(6, len(res)); err != nil {
 		t.Fatal(err)
 	}
-	if err = assertEq("offline2", (*res)[5][0]); err != nil {
+	if err = assertEq("offline2", res[5][0]); err != nil {
 		t.Fatal(err)
 	}
-	if err = assertEq(float64(2), (*res)[5][1]); err != nil {
+	if err = assertEq(float64(2), res[5][1]); err != nil {
 		t.Fatal(err)
 	}
-	if err = assertLike("connect: no such file or directory", (*res)[5][2].(string)); err != nil {
+	if err = assertLike("connect: no such file or directory", res[5][2].(string)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -946,7 +999,7 @@ func TestTableNameColName(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = assertEq("testhost_1", (*res)[0][0]); err != nil {
+	if err = assertEq("testhost_1", res[0][0]); err != nil {
 		t.Error(err)
 	}
 
@@ -954,7 +1007,7 @@ func TestTableNameColName(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = assertEq("Everything", (*res)[0][0]); err != nil {
+	if err = assertEq("Everything", res[0][0]); err != nil {
 		t.Error(err)
 	}
 
@@ -962,7 +1015,7 @@ func TestTableNameColName(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = assertEq("host_1", (*res)[0][0]); err != nil {
+	if err = assertEq("host_1", res[0][0]); err != nil {
 		t.Error(err)
 	}
 
@@ -970,7 +1023,7 @@ func TestTableNameColName(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = assertEq("testhost_1", (*res)[0][0]); err != nil {
+	if err = assertEq("testhost_1", res[0][0]); err != nil {
 		t.Error(err)
 	}
 
@@ -978,7 +1031,7 @@ func TestTableNameColName(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = assertEq("testsvc_1", (*res)[0][0]); err != nil {
+	if err = assertEq("testsvc_1", res[0][0]); err != nil {
 		t.Error(err)
 	}
 
@@ -999,7 +1052,7 @@ func TestMembersWithState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	value := (*res)[0][0].([]interface{})[0].([]interface{})
+	value := res[0][0].([]interface{})[0].([]interface{})
 	if err = assertEq("testhost_1", value[0]); err != nil {
 		t.Error(err)
 	}
@@ -1014,7 +1067,7 @@ func TestMembersWithState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	value = (*res)[0][0].([]interface{})[0].([]interface{})
+	value = res[0][0].([]interface{})[0].([]interface{})
 	if err := assertEq("testhost_2", value[0]); err != nil {
 		t.Error(err)
 	}
@@ -1045,15 +1098,15 @@ func TestCustomVarCol(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	val := (*res)[0][1].([]interface{})
+	val := res[0][1].([]interface{})
 	if err = assertEq("TEST", val[0].(string)); err != nil {
 		t.Error(err)
 	}
-	val = (*res)[0][2].([]interface{})
+	val = res[0][2].([]interface{})
 	if err = assertEq("1", val[0].(string)); err != nil {
 		t.Error(err)
 	}
-	hash := (*res)[0][0].(map[string]interface{})
+	hash := res[0][0].(map[string]interface{})
 	if err = assertEq("1", hash["TEST"].(string)); err != nil {
 		t.Error(err)
 	}
@@ -1076,18 +1129,18 @@ func TestCustomVarColContacts(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	val := (*res)[0][1].([]interface{})
+	val := res[0][1].([]interface{})
 	// custom_variable_names
 	if err = assertEq("FOO", val[0].(string)); err != nil {
 		t.Error(err)
 	}
 	// custom_variable_values
-	val = (*res)[0][2].([]interface{})
+	val = res[0][2].([]interface{})
 	if err = assertEq("12345", val[0].(string)); err != nil {
 		t.Error(err)
 	}
 	// custom_variables
-	hash := (*res)[0][0].(map[string]interface{})
+	hash := res[0][0].(map[string]interface{})
 	if err = assertEq("12345", hash["FOO"].(string)); err != nil {
 		t.Error(err)
 	}
@@ -1130,7 +1183,7 @@ func TestServiceHardStateColumns(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err = assertEq(float64(req.expected), (*res)[0][0]); err != nil {
+		if err = assertEq(float64(req.expected), res[0][0]); err != nil {
 			t.Errorf("Query failed: %q\n%s", req.query, err)
 		}
 	}
@@ -1162,7 +1215,7 @@ func TestWorstServiceState(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err = assertEq(float64(req.expected), (*res)[0][0]); err != nil {
+		if err = assertEq(float64(req.expected), res[0][0]); err != nil {
 			t.Errorf("Query failed: %q\n%s", req.query, err)
 		}
 	}
@@ -1185,7 +1238,7 @@ func TestShouldBeScheduled(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err = assertEq(1., (*res)[0][0]); err != nil {
+	if err = assertEq(1., res[0][0]); err != nil {
 		t.Error(err)
 	}
 
@@ -1194,7 +1247,7 @@ func TestShouldBeScheduled(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := assertEq(1., (*res)[0][0]); err != nil {
+	if err := assertEq(1., res[0][0]); err != nil {
 		t.Error(err)
 	}
 
@@ -1211,11 +1264,11 @@ func TestNegate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = assertEq(9, len(*res)); err != nil {
+	if err = assertEq(9, len(res)); err != nil {
 		t.Error(err)
 	}
 
-	for _, host := range *res {
+	for _, host := range res {
 		if err = assertNeq("testhost_1", host[0]); err != nil {
 			t.Error(err)
 		}
@@ -1226,11 +1279,11 @@ func TestNegate(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err = assertEq(1, len(*res)); err != nil {
+	if err = assertEq(1, len(res)); err != nil {
 		t.Error(err)
 	}
 
-	for _, host := range *res {
+	for _, host := range res {
 		if err = assertEq("testhost_1", host[0]); err != nil {
 			t.Error(err)
 		}
@@ -1253,16 +1306,16 @@ func TestComments(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = assertEq(2, len(*res)); err != nil {
+	if err = assertEq(2, len(res)); err != nil {
 		t.Fatal(err)
 	}
-	if err = assertEq(float64(1), (*res)[0][0]); err != nil {
+	if err = assertEq(float64(1), res[0][0]); err != nil {
 		t.Error(err)
 	}
-	if err = assertEq(float64(2), (*res)[1][0]); err != nil {
+	if err = assertEq(float64(2), res[1][0]); err != nil {
 		t.Error(err)
 	}
-	if err = assertEq("testhost_2", (*res)[1][1]); err != nil {
+	if err = assertEq("testhost_2", res[1][1]); err != nil {
 		t.Error(err)
 	}
 
@@ -1270,10 +1323,10 @@ func TestComments(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = assertEq(1, len(*res)); err != nil {
+	if err = assertEq(1, len(res)); err != nil {
 		t.Fatal(err)
 	}
-	if err = assertEq([]interface{}{interface{}(float64(2))}, (*res)[0][0]); err != nil {
+	if err = assertEq([]interface{}{interface{}(float64(2))}, res[0][0]); err != nil {
 		t.Error(err)
 	}
 
@@ -1290,7 +1343,7 @@ func TestServicesWithInfo(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	value := (*res)[0][0].([]interface{})[0].([]interface{})
+	value := res[0][0].([]interface{})[0].([]interface{})
 
 	// service description
 	if err = assertEq("testsvc_1", value[0]); err != nil {
@@ -1333,7 +1386,7 @@ OutputFormat: wrapped_json
 ResponseHeader: fixed16
 `
 
-	req, _, err := NewRequest(bufio.NewReader(bytes.NewBufferString(query)), ParseOptimize)
+	req, _, err := NewRequest(context.TODO(), bufio.NewReader(bytes.NewBufferString(query)), ParseOptimize)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1348,7 +1401,7 @@ ResponseHeader: fixed16
 	if err = assertEq(int64(9), meta.Total); err != nil {
 		t.Fatal(err)
 	}
-	if err = assertEq("testhost_10", (*res)[8][0]); err != nil {
+	if err = assertEq("testhost_10", res[8][0]); err != nil {
 		t.Error(err)
 	}
 
@@ -1358,7 +1411,7 @@ ResponseHeader: fixed16
 	OutputFormat: wrapped_json
 	ResponseHeader: fixed16
 	`
-	req, _, err = NewRequest(bufio.NewReader(bytes.NewBufferString(query)), ParseOptimize)
+	req, _, err = NewRequest(context.TODO(), bufio.NewReader(bytes.NewBufferString(query)), ParseOptimize)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1372,7 +1425,7 @@ ResponseHeader: fixed16
 	if err = assertEq(int64(1), meta.Total); err != nil {
 		t.Fatal(err)
 	}
-	if err = assertEq("testhost_2", (*res)[0][0]); err != nil {
+	if err = assertEq("testhost_2", res[0][0]); err != nil {
 		t.Error(err)
 	}
 
@@ -1382,7 +1435,7 @@ ResponseHeader: fixed16
 	OutputFormat: wrapped_json
 	ResponseHeader: fixed16
 	`
-	req, _, err = NewRequest(bufio.NewReader(bytes.NewBufferString(query)), ParseOptimize)
+	req, _, err = NewRequest(context.TODO(), bufio.NewReader(bytes.NewBufferString(query)), ParseOptimize)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1396,13 +1449,13 @@ ResponseHeader: fixed16
 	if err = assertEq(int64(1), meta.Total); err != nil {
 		t.Fatal(err)
 	}
-	if err = assertEq("testhost_2", (*res)[0][0]); err != nil {
+	if err = assertEq("testhost_2", res[0][0]); err != nil {
 		t.Error(err)
 	}
-	if err = assertEq("testhost_2", (*res)[0][2]); err != nil {
+	if err = assertEq("testhost_2", res[0][2]); err != nil {
 		t.Error(err)
 	}
-	if err = assertEq("testhost_2_alias", (*res)[0][3]); err != nil {
+	if err = assertEq("testhost_2_alias", res[0][3]); err != nil {
 		t.Error(err)
 	}
 
@@ -1420,7 +1473,11 @@ func TestRequestKeepalive(t *testing.T) {
 
 	getOpenListeners := func() int64 {
 		time.Sleep(KeepAliveWaitInterval)
-		return (atomic.LoadInt64(&(Listeners["test.sock"].openConnections)))
+		l := Listeners["test.sock"]
+		l.Lock.RLock()
+		num := l.openConnections
+		l.Lock.RUnlock()
+		return num
 	}
 
 	// open connections should be zero
@@ -1434,7 +1491,7 @@ func TestRequestKeepalive(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	req, _, _ := NewRequest(bufio.NewReader(bytes.NewBufferString("GET hosts\nColumns: name\n")), ParseOptimize)
+	req, _, _ := NewRequest(context.TODO(), bufio.NewReader(bytes.NewBufferString("GET hosts\nColumns: name\n")), ParseOptimize)
 	req.ResponseFixed16 = true
 
 	// send request without keepalive
@@ -1547,5 +1604,244 @@ func TestRequestKeepalive(t *testing.T) {
 
 	if err := StopTestPeer(peer); err != nil {
 		panic(err.Error())
+	}
+}
+
+func TestIndexedHost(t *testing.T) {
+	peer := StartTestPeer(1, 10, 10)
+	PauseTestPeers(peer)
+
+	res, meta, err := peer.QueryString("GET hosts\nColumns: name state alias\nOutputFormat: wrapped_json\nColumnHeaders: on\nFilter: name = testhost_1\n\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = assertEq(1, len(res)); err != nil {
+		t.Error(err)
+	}
+	if err = assertEq(int64(1), meta.Total); err != nil {
+		t.Error(err)
+	}
+	if err = assertEq(int64(1), meta.RowsScanned); err != nil {
+		t.Error(err)
+	}
+}
+
+func TestIndexedService(t *testing.T) {
+	peer := StartTestPeer(1, 10, 10)
+	PauseTestPeers(peer)
+
+	res, meta, err := peer.QueryString("GET services\nColumns: host_name description state\nOutputFormat: wrapped_json\nColumnHeaders: on\nFilter: host_name = testhost_1\n\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = assertEq(1, len(res)); err != nil {
+		t.Error(err)
+	}
+	if err = assertEq(int64(1), meta.Total); err != nil {
+		t.Error(err)
+	}
+	if err = assertEq(int64(1), meta.RowsScanned); err != nil {
+		t.Error(err)
+	}
+}
+
+func TestIndexedServiceByHostRegex(t *testing.T) {
+	peer := StartTestPeer(1, 10, 10)
+	PauseTestPeers(peer)
+
+	res, meta, err := peer.QueryString("GET services\nColumns: host_name description state\nOutputFormat: wrapped_json\nColumnHeaders: on\nFilter: host_name ~~ Test.*1$\n\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = assertEq(1, len(res)); err != nil {
+		t.Error(err)
+	}
+	if err = assertEq(int64(1), meta.Total); err != nil {
+		t.Error(err)
+	}
+	if err = assertEq(int64(1), meta.RowsScanned); err != nil {
+		t.Error(err)
+	}
+}
+
+func TestIndexedHostByHostgroup(t *testing.T) {
+	peer := StartTestPeer(1, 10, 10)
+	PauseTestPeers(peer)
+
+	res, meta, err := peer.QueryString("GET hosts\nColumns: name state\nOutputFormat: wrapped_json\nColumnHeaders: on\nFilter: groups >= Everything\n\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = assertEq(1, len(res)); err != nil {
+		t.Error(err)
+	}
+	if err = assertEq(int64(1), meta.Total); err != nil {
+		t.Error(err)
+	}
+	if err = assertEq(int64(1), meta.RowsScanned); err != nil {
+		t.Error(err)
+	}
+}
+
+func TestIndexedServiceByHostgroup(t *testing.T) {
+	peer := StartTestPeer(1, 10, 10)
+	PauseTestPeers(peer)
+
+	res, meta, err := peer.QueryString("GET services\nColumns: host_name description state\nOutputFormat: wrapped_json\nColumnHeaders: on\nFilter: host_groups >= Everything\n\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = assertEq(1, len(res)); err != nil {
+		t.Error(err)
+	}
+	if err = assertEq(int64(1), meta.Total); err != nil {
+		t.Error(err)
+	}
+	if err = assertEq(int64(1), meta.RowsScanned); err != nil {
+		t.Error(err)
+	}
+}
+
+func TestIndexedServiceByServicegroup(t *testing.T) {
+	peer := StartTestPeer(1, 10, 10)
+	PauseTestPeers(peer)
+
+	res, meta, err := peer.QueryString("GET services\nColumns: host_name description state\nOutputFormat: wrapped_json\nColumnHeaders: on\nFilter: groups >= Http Check\n\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = assertEq(1, len(res)); err != nil {
+		t.Error(err)
+	}
+	if err = assertEq(int64(1), meta.Total); err != nil {
+		t.Error(err)
+	}
+	if err = assertEq(int64(1), meta.RowsScanned); err != nil {
+		t.Error(err)
+	}
+}
+
+func TestIndexedServiceByNestedHosts(t *testing.T) {
+	peer := StartTestPeer(1, 10, 10)
+	PauseTestPeers(peer)
+
+	res, meta, err := peer.QueryString(`GET services
+Columns: host_name description state
+OutputFormat: wrapped_json
+ColumnHeaders: on
+Filter: host_name = testhost_1
+Filter: description = testsvc_1
+And: 2
+Filter: host_name = testhost_2
+Filter: description = testsvc_1
+And: 2
+Or: 2
+
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = assertEq(2, len(res)); err != nil {
+		t.Error(err)
+	}
+	if err = assertEq(int64(2), meta.Total); err != nil {
+		t.Error(err)
+	}
+	if err = assertEq(int64(2), meta.RowsScanned); err != nil {
+		t.Error(err)
+	}
+}
+
+func TestStatsQueryOptimizer(t *testing.T) {
+	query := `GET services
+OutputFormat: wrapped_json
+ColumnHeaders: on
+Stats: has_been_checked = 1
+Stats: has_been_checked = 1
+Stats: state = 0
+StatsAnd: 2
+Stats: has_been_checked = 1
+Stats: state = 1
+StatsAnd: 2
+Stats: has_been_checked = 1
+Stats: state = 2
+StatsAnd: 2
+`
+	buf := bufio.NewReader(bytes.NewBufferString(query))
+	req, _, err := NewRequest(context.TODO(), buf, ParseOptimize)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = assertEq(2, len(req.StatsGrouped)); err != nil {
+		t.Error(err)
+	}
+	if err = assertEq(Counter, req.StatsGrouped[0].StatsType); err != nil {
+		t.Error(err)
+	}
+	if err = assertEq(StatsGroup, req.StatsGrouped[1].StatsType); err != nil {
+		t.Error(err)
+	}
+	if err = assertEq(3, len(req.StatsGrouped[1].Filter)); err != nil {
+		t.Error(err)
+	}
+	if err = assertEq(3, req.StatsGrouped[1].Filter[2].StatsPos); err != nil {
+		t.Error(err)
+	}
+}
+
+func TestQueryWrappedJSON(t *testing.T) {
+	peer := StartTestPeer(1, 10, 10)
+	PauseTestPeers(peer)
+
+	res, meta, err := peer.QueryString(`GET services
+OutputFormat: wrapped_json
+ColumnHeaders: on
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = assertEq(int64(10), meta.RowsScanned); err != nil {
+		t.Error(err)
+	}
+	if err = assertEq(10, len(res)); err != nil {
+		t.Error(err)
+	}
+}
+
+func TestServiceCustVarFilter(t *testing.T) {
+	peer := StartTestPeer(1, 10, 10)
+	PauseTestPeers(peer)
+
+	res, meta, err := peer.QueryString("GET services\nColumns: host_name description custom_variables\nOutputFormat: wrapped_json\nFilter: custom_variables = TEST 1\n\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = assertEq(3, len(res)); err != nil {
+		t.Error(err)
+	}
+	if err = assertEq(int64(3), meta.Total); err != nil {
+		t.Error(err)
+	}
+	if err = assertEq(int64(10), meta.RowsScanned); err != nil {
+		t.Error(err)
+	}
+}
+
+func TestServiceCustVarRegexFilter(t *testing.T) {
+	peer := StartTestPeer(1, 10, 10)
+	PauseTestPeers(peer)
+
+	res, meta, err := peer.QueryString("GET services\nColumns: host_name description custom_variables\nOutputFormat: wrapped_json\nFilter: custom_variables ~~ TEST2 ^cust\n\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = assertEq(3, len(res)); err != nil {
+		t.Error(err)
+	}
+	if err = assertEq(int64(3), meta.Total); err != nil {
+		t.Error(err)
+	}
+	if err = assertEq(int64(10), meta.RowsScanned); err != nil {
+		t.Error(err)
 	}
 }

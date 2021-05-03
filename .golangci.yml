@@ -44,6 +44,10 @@ linters:
     - godot
     - forbidigo
     - ifshort
+    - cyclop
+    - forcetypeassert
+    - nilerr
+    - wastedassign
   fast: false
 issues:
   max-same-issues: 0
@@ -58,11 +62,14 @@ issues:
     - "cyclomatic complexity .* of func `matchStringListFilter` is high"
     - "cyclomatic complexity .* of func `.*String` is high"
     - "cyclomatic complexity .* of func `TestRequestKeepalive` is high"
+    - "cyclomatic complexity .* of func `appendIndexHostsFromServiceColumns` is high"
     - "G108: Profiling endpoint is automatically exposed"
     - "ptrToRefParam: consider `commandsByPeer' to be of non-pointer type"
     - "cognitive complexity .* of func `ProcessRequests` is high"
     - "cognitive complexity .* of func `.*Request..getDistributedResponse` is high"
     - "cognitive complexity .* of func `.*Peer..waitcondition` is high"
+    - "cognitive complexity .* of func `appendIndexHostsFromServiceColumns` is high"
+    - "cognitive complexity .* of func `.*..optimizeStatsGroups` is high"
     - 'Magic number: 1\D '
     - 'Magic number: 2\D '
     - 'Magic number: 3\D '
@@ -70,9 +77,7 @@ issues:
     - 'Magic number: 10\D '
     - 'Magic number: 16\D '
     - 'Magic number: 32\D '
-    - 'Magic number: 64\D '
     - 'Magic number: 100\D '
-    - 'Magic number: 2.23\D '
     - 'Magic number: 200\D '
     - 'Magic number: 400\D '
     - 'Magic number: 502\D '
@@ -89,8 +94,14 @@ issues:
     - 'lines are duplicate of.*objects.go:'
     - "Function 'NewHostsTable' has too many statements"
     - "Function 'NewServicesTable' has too many statements"
+    - "func .*noCopy.* is unused"
+    - "Use of weak random number generator"
+    - "Error return value of `log.Output` is not checked"
   exclude-rules:
     # Exclude some linters from running on tests files.
     - path: _test\.go
+      linters:
+        - gomnd
+    - path: config\.go
       linters:
         - gomnd

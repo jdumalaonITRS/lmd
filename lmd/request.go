@@ -3,10 +3,13 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"math/rand"
 	"net"
 	"reflect"
 	"regexp"
@@ -22,6 +25,7 @@ import (
 // Request defines a livestatus request object.
 type Request struct {
 	noCopy              noCopy
+	id                  string
 	Table               TableName
 	Command             string
 	Columns             []string  // parsed columns field
@@ -29,7 +33,8 @@ type Request struct {
 	Filter              []*Filter
 	FilterStr           string
 	Stats               []*Filter
-	StatsResult         ResultSetStats
+	StatsGrouped        []*Filter // optimized stats groups
+	StatsResult         *ResultSetStats
 	Limit               *int
 	Offset              int
 	Sort                []*SortField
@@ -70,7 +75,7 @@ const (
 	ParseDefault ParseOptions = 0
 
 	// ParseOptimize trys to use lower case columns and string matches instead of regular expressions
-	ParseOptimize = 1 << iota
+	ParseOptimize ParseOptions = 1 << iota
 )
 
 // String converts a SortDirection back to the original string.
@@ -140,39 +145,42 @@ func (op *GroupOperator) String() string {
 	case Or:
 		return ("Or")
 	}
-	log.Panicf("not implemented")
+	log.Panicf("not implemented: %#v", op)
 	return ""
 }
 
 // ResultMetaData contains meta from the response data
 type ResultMetaData struct {
-	Total    int64         // total number of result rows
-	Columns  []string      // list of requested columns
-	Duration time.Duration // response time in seconds
-	Size     int           // result size in bytes
+	Total       int64         // total number of result rows
+	RowsScanned int64         // total number of scanned rows for this result
+	Columns     []string      // list of requested columns
+	Duration    time.Duration // response time in seconds
+	Size        int           // result size in bytes
+	Request     *Request      // the request itself
 }
 
 var reRequestAction = regexp.MustCompile(`^GET +([a-z]+)$`)
 var reRequestCommand = regexp.MustCompile(`^COMMAND +(\[\d+\].*)$`)
+var defaultParseOptimizer = ParseOptimize
 
 // ParseRequest reads from a connection and returns a single requests.
 // It returns a the requests and any errors encountered.
-func ParseRequest(c net.Conn) (req *Request, err error) {
+func ParseRequest(ctx context.Context, c net.Conn) (req *Request, err error) {
 	b := bufio.NewReader(c)
 	localAddr := c.LocalAddr().String()
-	req, size, err := NewRequest(b, ParseOptimize)
+	req, size, err := NewRequest(ctx, b, defaultParseOptimizer)
 	promFrontendBytesReceived.WithLabelValues(localAddr).Add(float64(size))
 	return
 }
 
 // ParseRequests reads from a connection and returns all requests read.
 // It returns a list of requests and any errors encountered.
-func ParseRequests(c net.Conn) (reqs []*Request, err error) {
+func ParseRequests(ctx context.Context, c net.Conn) (reqs []*Request, err error) {
 	b := bufio.NewReader(c)
 	localAddr := c.LocalAddr().String()
 	eof := false
 	for {
-		req, size, err := NewRequest(b, ParseOptimize)
+		req, size, err := NewRequest(ctx, b, defaultParseOptimizer)
 		promFrontendBytesReceived.WithLabelValues(localAddr).Add(float64(size))
 		if err != nil {
 			if errors.Is(err, io.EOF) {
@@ -271,7 +279,7 @@ func (req *Request) String() (str string) {
 
 // NewRequest reads a buffer and creates a new request object.
 // It returns the request as long with the number of bytes read and any error.
-func NewRequest(b *bufio.Reader, options ParseOptions) (req *Request, size int, err error) {
+func NewRequest(ctx context.Context, b *bufio.Reader, options ParseOptions) (req *Request, size int, err error) {
 	firstLine, err := b.ReadString('\n')
 	if err == io.EOF {
 		if firstLine == "" {
@@ -284,14 +292,16 @@ func NewRequest(b *bufio.Reader, options ParseOptions) (req *Request, size int, 
 	if _, ok := err.(net.Error); ok {
 		return
 	}
+
+	req = &Request{ColumnsHeaders: false, KeepAlive: false}
+	ctx = context.WithValue(ctx, CtxRequest, req.ID())
 	size += len(firstLine)
 	firstLine = strings.TrimSpace(firstLine)
 	// probably a open connection without new data from a keepalive request
 	if firstLine != "" {
-		log.Debugf("request: %s", firstLine)
+		logWith(ctx).Debugf("request: %s", firstLine)
 	}
 
-	req = &Request{ColumnsHeaders: false, KeepAlive: false}
 	ok, err := req.ParseRequestAction(&firstLine)
 	if err != nil || !ok {
 		req = nil
@@ -310,7 +320,7 @@ func NewRequest(b *bufio.Reader, options ParseOptions) (req *Request, size int, 
 			break
 		}
 
-		log.Debugf("request: %s", line)
+		logWith(ctx).Debugf("request: %s", line)
 		perr := req.ParseRequestHeaderLine(line, options)
 		if perr != nil {
 			err = fmt.Errorf("bad request: %s in: %s", perr.Error(), line)
@@ -324,18 +334,22 @@ func NewRequest(b *bufio.Reader, options ParseOptions) (req *Request, size int, 
 
 	// remove unnecessary filter indentation
 	if options&ParseOptimize != 0 {
-		for {
-			if len(req.Filter) == 1 && len(req.Filter[0].Filter) > 0 && req.Filter[0].GroupOperator == And {
-				req.Filter = req.Filter[0].Filter
-			} else {
-				break
-			}
-		}
+		req.optimizeFilterIndentation()
+		req.StatsGrouped = req.optimizeStatsGroups(req.Stats, true)
 	}
 
 	req.SetRequestColumns()
 	err = req.SetSortColumns()
 	return
+}
+
+// ID returns the uniq request id
+func (req *Request) ID() string {
+	if req.id != "" {
+		return req.id
+	}
+	req.id = fmt.Sprintf("r:%x", sha256.Sum256([]byte(fmt.Sprintf("%d-%d", time.Now().Nanosecond(), rand.Int()))))[0:8]
+	return req.id
 }
 
 // ParseRequestAction parses the first line from a request which
@@ -627,7 +641,7 @@ func (req *Request) mergeDistributedResponse(collectedDatasets chan ResultSet, c
 
 	// Merge data
 	isStatsRequest := len(req.Stats) != 0
-	req.StatsResult = make(ResultSetStats)
+	req.StatsResult = NewResultSetStats()
 	for currentRows := range collectedDatasets {
 		if isStatsRequest {
 			// Stats request
@@ -643,8 +657,8 @@ func (req *Request) mergeDistributedResponse(collectedDatasets chan ResultSet, c
 					}
 					key = strings.Join(keys, ListSepChar1)
 				}
-				if _, ok := req.StatsResult[key]; !ok {
-					req.StatsResult[key] = createLocalStatsCopy(&req.Stats)
+				if _, ok := req.StatsResult.Stats[key]; !ok {
+					req.StatsResult.Stats[key] = createLocalStatsCopy(req.Stats)
 				}
 				if hasColumns > 0 {
 					row = row[hasColumns:]
@@ -653,7 +667,7 @@ func (req *Request) mergeDistributedResponse(collectedDatasets chan ResultSet, c
 					data := reflect.ValueOf(row[i])
 					value := data.Index(0).Interface()
 					count := data.Index(1).Interface()
-					req.StatsResult[key][i].ApplyValue(interface2float64(value), int(interface2float64(count)))
+					req.StatsResult.Stats[key][i].ApplyValue(interface2float64(value), int(interface2float64(count)))
 				}
 			}
 		} else {
@@ -742,7 +756,7 @@ func (req *Request) ParseRequestHeaderLine(line []byte, options ParseOptions) (e
 		req.WaitConditionNegate = true
 		return
 	case "negate":
-		err = ParseFilterNegate(&req.Filter)
+		err = ParseFilterNegate(req.Filter)
 		return
 	case "keepalive":
 		err = parseOnOff(&req.KeepAlive, args)
@@ -752,7 +766,7 @@ func (req *Request) ParseRequestHeaderLine(line []byte, options ParseOptions) (e
 		return
 	case "localtime":
 		if log.IsV(LogVerbosityDebug) {
-			log.Debugf("Ignoring %s as LMD works on unix timestamps only.", matched[0])
+			logWith(req).Debugf("Ignoring %s as LMD works on unix timestamps only.", matched[0])
 		}
 		return
 	case "authuser":
@@ -872,7 +886,7 @@ func parseAuthUser(field *string, value []byte) (err error) {
 
 // SetRequestColumns sets  list of used indexes and columns for this request.
 func (req *Request) SetRequestColumns() {
-	log.Tracef("SetRequestColumns")
+	logWith(req).Tracef("SetRequestColumns")
 	if req.Command != "" {
 		return
 	}
@@ -902,7 +916,7 @@ func (req *Request) SetRequestColumns() {
 
 // SetSortColumns set the requestcolumn for the sortfields
 func (req *Request) SetSortColumns() (err error) {
-	log.Tracef("SetSortColumns")
+	logWith(req).Tracef("SetSortColumns")
 	if req.Command != "" {
 		return
 	}
@@ -921,11 +935,11 @@ func (req *Request) SetSortColumns() (err error) {
 }
 
 // parseResult parses the result bytes and returns the data table and optional meta data for wrapped_json requests
-func (req *Request) parseResult(resBytes *[]byte) (*ResultSet, *ResultMetaData, error) {
+func (req *Request) parseResult(resBytes []byte) (ResultSet, *ResultMetaData, error) {
 	var err error
-	meta := &ResultMetaData{}
-	if len(*resBytes) == 0 || (string((*resBytes)[0]) != "{" && string((*resBytes)[0]) != "[") {
-		err = errors.New(strings.TrimSpace(string(*resBytes)))
+	meta := &ResultMetaData{Request: req}
+	if len(resBytes) == 0 || (string(resBytes[0]) != "{" && string(resBytes[0]) != "[") {
+		err = errors.New(strings.TrimSpace(string(resBytes)))
 		return nil, nil, &PeerError{msg: fmt.Sprintf("response does not look like a json result: %s", err.Error()), kind: ResponseError, req: req, resBytes: resBytes}
 	}
 	if req.OutputFormat == OutputFormatWrappedJSON {
@@ -936,7 +950,7 @@ func (req *Request) parseResult(resBytes *[]byte) (*ResultSet, *ResultMetaData, 
 		resBytes = dataBytes
 	}
 	res := make(ResultSet, 0)
-	offset, jErr := jsonparser.ArrayEach(*resBytes, func(rowBytes []byte, _ jsonparser.ValueType, _ int, aErr error) {
+	offset, jErr := jsonparser.ArrayEach(resBytes, func(rowBytes []byte, _ jsonparser.ValueType, _ int, aErr error) {
 		if aErr != nil {
 			err = aErr
 			return
@@ -953,44 +967,55 @@ func (req *Request) parseResult(resBytes *[]byte) (*ResultSet, *ResultMetaData, 
 				err = dErr
 				return
 			}
-			log.Debugf("fixed invalid characters in json data")
+			logWith(req).Debugf("fixed invalid characters in json data")
 		}
 		res = append(res, row)
 	})
 	// trailing comma error will be ignored
-	if jErr != nil && offset < len(*resBytes)-3 {
+	if jErr != nil && offset < len(resBytes)-3 {
 		return nil, nil, fmt.Errorf("parserResult jsonparse: %w", jErr)
 	}
 	if err != nil {
 		return nil, nil, err
 	}
 
-	return &res, meta, err
+	return res, meta, err
 }
 
-func (req *Request) parseWrappedJSONMeta(resBytes *[]byte, meta *ResultMetaData) (*[]byte, error) {
-	dataBytes, dataType, _, jErr := jsonparser.Get(*resBytes, "columns")
-	if jErr != nil {
-		log.Debugf("column header parse error: %s", jErr.Error())
-	} else if dataType == jsonparser.Array {
-		var columns []string
-		err := json.Unmarshal(dataBytes, &columns)
-		if err != nil {
-			return nil, &PeerError{msg: fmt.Sprintf("column header parse error: %s", err.Error()), kind: ResponseError, req: req, resBytes: resBytes}
+func (req *Request) parseWrappedJSONMeta(resBytes []byte, meta *ResultMetaData) ([]byte, error) {
+	var dataBytes []byte
+	err := jsonparser.ObjectEach(resBytes, func(keyBytes []byte, valueBytes []byte, _ jsonparser.ValueType, _ int) error {
+		key := string(keyBytes)
+		switch key {
+		case "total_count":
+			val, err := jsonparser.ParseInt(valueBytes)
+			if err != nil {
+				return &PeerError{msg: fmt.Sprintf("total_count meta data parse error: %s", err.Error()), kind: ResponseError, req: req, resBytes: resBytes}
+			}
+			meta.Total = val
+		case "columns":
+			var columns []string
+			err := json.Unmarshal(valueBytes, &columns)
+			if err != nil {
+				return &PeerError{msg: fmt.Sprintf("columns meta data parse error: %s", err.Error()), kind: ResponseError, req: req, resBytes: resBytes}
+			}
+			meta.Columns = columns
+		case "rows_scanned":
+			val, err := jsonparser.ParseInt(valueBytes)
+			if err != nil {
+				return &PeerError{msg: fmt.Sprintf("rows_scanned meta data parse error: %s", err.Error()), kind: ResponseError, req: req, resBytes: resBytes}
+			}
+			meta.RowsScanned = val
+		case "data":
+			dataBytes = valueBytes
 		}
-		meta.Columns = columns
+		return nil
+	})
+	if err != nil {
+		return nil, &PeerError{msg: fmt.Sprintf("json parse error: %s", err.Error()), kind: ResponseError, req: req, resBytes: resBytes}
 	}
-	totalCount, jErr := jsonparser.GetInt(*resBytes, "total_count")
-	if jErr != nil {
-		return nil, &PeerError{msg: fmt.Sprintf("total header parse error: %s", jErr.Error()), kind: ResponseError, req: req, resBytes: resBytes}
-	}
-	meta.Total = totalCount
 
-	dataBytes, _, _, jErr = jsonparser.Get(*resBytes, "data")
-	if jErr != nil {
-		return nil, &PeerError{msg: fmt.Sprintf("data header parse error: %s", jErr.Error()), kind: ResponseError, req: req, resBytes: resBytes}
-	}
-	return &dataBytes, nil
+	return dataBytes, nil
 }
 
 // IsDefaultSortOrder returns true if the sortfields are the default for the given table.
@@ -1023,4 +1048,112 @@ func (req *Request) optimizeResultLimit() (limit int) {
 		limit = -1
 	}
 	return
+}
+
+// optimizeFilterIndentation removes unnecessary filter indentation
+func (req *Request) optimizeFilterIndentation() {
+	for {
+		if len(req.Filter) == 1 && len(req.Filter[0].Filter) > 0 && req.Filter[0].GroupOperator == And {
+			req.Filter = req.Filter[0].Filter
+		} else {
+			break
+		}
+	}
+}
+
+/* optimizeStatsGroups combines similar StatsAnd: to nested stats
+   for example with a query like:
+
+```
+    Stats: has_been_checked = 1
+    Stats: state = 0
+    StatsAnd: 2
+    Stats: has_been_checked = 1
+    Stats: state = 1
+    StatsAnd: 2
+```
+
+    those two counters can be combined, so the has_been_checked has only to be checked once
+*/
+func (req *Request) optimizeStatsGroups(stats []*Filter, renumber bool) []*Filter {
+	if len(stats) <= 1 {
+		return nil
+	}
+	groupedStats := make([]*Filter, 0)
+	var lastGroup *Filter
+	for i := range stats {
+		s := stats[i]
+		if renumber {
+			s.StatsPos = i
+		}
+		if s.StatsType != Counter || s.Column != nil || len(s.Filter) < 2 {
+			groupedStats = append(groupedStats, s)
+			continue
+		}
+
+		// append to previous group?
+		if i >= 1 && lastGroup != nil {
+			firstFilter := s.Filter[0]
+			if lastGroup.Column == firstFilter.Column && lastGroup.Operator == firstFilter.Operator && lastGroup.StrValue == firstFilter.StrValue {
+				lastGroup.Filter = append(lastGroup.Filter, removeFirstStatsFilter(s))
+				continue
+			}
+		}
+
+		// build sub stats groups recursively
+		req.optimizeStatsGroupsRecurse(lastGroup)
+
+		// start a new group if the current first stats filter matches the next first stats filter
+		if len(stats) > i+1 {
+			next := stats[i+1]
+			if next.StatsType != Counter || next.Column != nil || len(next.Filter) < 2 {
+				groupedStats = append(groupedStats, s)
+				continue
+			}
+			if !next.Filter[0].Equals(s.Filter[0]) {
+				groupedStats = append(groupedStats, s)
+				continue
+			}
+
+			group := s.Filter[0]
+			group.StatsType = StatsGroup
+			group.Filter = []*Filter{removeFirstStatsFilter(s)}
+
+			groupedStats = append(groupedStats, group)
+			lastGroup = group
+			continue
+		}
+
+		groupedStats = append(groupedStats, s)
+	}
+	// build sub stats groups recursively
+	req.optimizeStatsGroupsRecurse(lastGroup)
+	return groupedStats
+}
+
+func (req *Request) optimizeStatsGroupsRecurse(lastGroup *Filter) {
+	if lastGroup == nil {
+		return
+	}
+	subgroup := req.optimizeStatsGroups(lastGroup.Filter, false)
+	if subgroup != nil {
+		lastGroup.Filter = subgroup
+	}
+	lastGroup = nil
+}
+
+func removeFirstStatsFilter(s *Filter) *Filter {
+	// strip first filter, this one is handled in the parent group
+	s.Filter = s.Filter[1:]
+
+	// still multiple filters, keep list
+	if len(s.Filter) > 1 {
+		return s
+	}
+
+	// remove indentation lvl if only one remaining
+	s.Filter[0].StatsPos = s.StatsPos
+	s = s.Filter[0]
+	s.StatsType = Counter
+	return s
 }

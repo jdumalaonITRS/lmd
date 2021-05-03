@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"fmt"
 	"sync"
 	"testing"
@@ -48,7 +49,7 @@ func TestPeerHTTPComplete(t *testing.T) {
 }
 
 func TestParseResultJSON(t *testing.T) {
-	req, _, err := NewRequest(bufio.NewReader(bytes.NewBufferString("GET services\nColumns: host_name description state list hash\nOutputFormat: json\n")), ParseOptimize)
+	req, _, err := NewRequest(context.TODO(), bufio.NewReader(bytes.NewBufferString("GET services\nColumns: host_name description state list hash\nOutputFormat: json\n")), ParseOptimize)
 	if err != nil {
 		panic(err.Error())
 	}
@@ -57,27 +58,27 @@ func TestParseResultJSON(t *testing.T) {
 	 ["host2", "desc2", 1, [1,2], {"a": 1}],
 	]`)
 
-	res, _, err := req.parseResult(&data)
+	res, _, err := req.parseResult(data)
 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := assertEq(2, len(*res)); err != nil {
+	if err := assertEq(2, len(res)); err != nil {
 		t.Fatal(err)
 	}
-	if err := assertEq(5, len((*res)[0])); err != nil {
+	if err := assertEq(5, len(res[0])); err != nil {
 		t.Error(err)
 	}
-	if err := assertEq("host2", (*res)[1][0]); err != nil {
+	if err := assertEq("host2", res[1][0]); err != nil {
 		t.Error(err)
 	}
-	if err := assertEq(float64(1), (*res)[1][2]); err != nil {
+	if err := assertEq(float64(1), res[1][2]); err != nil {
 		t.Error(err)
 	}
 }
 
 func TestParseResultWrappedJSON(t *testing.T) {
-	req, _, err := NewRequest(bufio.NewReader(bytes.NewBufferString("GET services\nColumns: host_name description state list hash\nOutputFormat: wrapped_json\n")), ParseOptimize)
+	req, _, err := NewRequest(context.TODO(), bufio.NewReader(bytes.NewBufferString("GET services\nColumns: host_name description state list hash\nOutputFormat: wrapped_json\n")), ParseOptimize)
 	if err != nil {
 		panic(err.Error())
 	}
@@ -87,21 +88,21 @@ func TestParseResultWrappedJSON(t *testing.T) {
 	],
 	"total_count": 2}`)
 
-	res, meta, err := req.parseResult(&data)
+	res, meta, err := req.parseResult(data)
 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := assertEq(2, len(*res)); err != nil {
+	if err := assertEq(2, len(res)); err != nil {
 		t.Fatal(err)
 	}
-	if err := assertEq(5, len((*res)[0])); err != nil {
+	if err := assertEq(5, len(res[0])); err != nil {
 		t.Error(err)
 	}
-	if err := assertEq("host2", (*res)[1][0]); err != nil {
+	if err := assertEq("host2", res[1][0]); err != nil {
 		t.Error(err)
 	}
-	if err := assertEq(float64(1), (*res)[1][2]); err != nil {
+	if err := assertEq(float64(1), res[1][2]); err != nil {
 		t.Error(err)
 	}
 	if err := assertEq(int64(2), meta.Total); err != nil {
@@ -110,7 +111,7 @@ func TestParseResultWrappedJSON(t *testing.T) {
 }
 
 func TestParseResultJSONBroken(t *testing.T) {
-	req, _, err := NewRequest(bufio.NewReader(bytes.NewBufferString("GET services\nColumns: host_name description state list hash\nOutputFormat: json\n")), ParseOptimize)
+	req, _, err := NewRequest(context.TODO(), bufio.NewReader(bytes.NewBufferString("GET services\nColumns: host_name description state list hash\nOutputFormat: json\n")), ParseOptimize)
 	if err != nil {
 		panic(err.Error())
 	}
@@ -120,7 +121,7 @@ func TestParseResultJSONBroken(t *testing.T) {
 	]`)
 
 	InitLogging(&Config{LogLevel: "off", LogFile: "stderr"})
-	res, _, err := req.parseResult(&data)
+	res, _, err := req.parseResult(data)
 	InitLogging(&Config{LogLevel: testLogLevel, LogFile: "stderr"})
 
 	if err == nil {
@@ -133,7 +134,7 @@ func TestParseResultJSONBroken(t *testing.T) {
 }
 
 func TestParseResultJSONBroken2(t *testing.T) {
-	req, _, err := NewRequest(bufio.NewReader(bytes.NewBufferString("GET services\nColumns: host_name description state list hash\nOutputFormat: json\n")), ParseOptimize)
+	req, _, err := NewRequest(context.TODO(), bufio.NewReader(bytes.NewBufferString("GET services\nColumns: host_name description state list hash\nOutputFormat: json\n")), ParseOptimize)
 	if err != nil {
 		panic(err.Error())
 	}
@@ -143,7 +144,7 @@ func TestParseResultJSONBroken2(t *testing.T) {
 	]`)
 
 	InitLogging(&Config{LogLevel: "off", LogFile: "stderr"})
-	res, _, err := req.parseResult(&data)
+	res, _, err := req.parseResult(data)
 	InitLogging(&Config{LogLevel: testLogLevel, LogFile: "stderr"})
 
 	if err == nil {
@@ -156,7 +157,7 @@ func TestParseResultJSONBroken2(t *testing.T) {
 }
 
 func TestParseResultJSONEscapeSequences(t *testing.T) {
-	req, _, err := NewRequest(bufio.NewReader(bytes.NewBufferString("GET services\nColumns: host_name\nOutputFormat: json\n")), ParseOptimize)
+	req, _, err := NewRequest(context.TODO(), bufio.NewReader(bytes.NewBufferString("GET services\nColumns: host_name\nOutputFormat: json\n")), ParseOptimize)
 	if err != nil {
 		panic(err.Error())
 	}
@@ -164,16 +165,16 @@ func TestParseResultJSONEscapeSequences(t *testing.T) {
 		data := []byte(fmt.Sprintf("[[\"null%s\"]]", s))
 
 		InitLogging(&Config{LogLevel: "off", LogFile: "stderr"})
-		res, _, err := req.parseResult(&data)
+		res, _, err := req.parseResult(data)
 		InitLogging(&Config{LogLevel: testLogLevel, LogFile: "stderr"})
 
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := assertEq(1, len(*res)); err != nil {
+		if err := assertEq(1, len(res)); err != nil {
 			t.Error(err)
 		}
-		if err := assertLike("null", (*res)[0][0].(string)); err != nil {
+		if err := assertLike("null", res[0][0].(string)); err != nil {
 			t.Error(err)
 		}
 	}
@@ -188,6 +189,41 @@ func TestPeerUpdate(t *testing.T) {
 		t.Error(err)
 	}
 
+	peer.StatusSet(LastUpdate, int64(0))
+	err = peer.periodicUpdate()
+	if err != nil {
+		t.Error(err)
+	}
+
+	peer.StatusSet(LastUpdate, int64(0))
+	peer.StatusSet(PeerState, PeerStatusWarning)
+	err = peer.periodicUpdate()
+	if err != nil {
+		t.Error(err)
+	}
+
+	peer.StatusSet(LastUpdate, int64(0))
+	peer.StatusSet(PeerState, PeerStatusDown)
+	err = peer.periodicUpdate()
+	if err != nil {
+		t.Error(err)
+	}
+
+	err = peer.periodicTimeperiodsUpdate(peer.data)
+	if err != nil {
+		t.Error(err)
+	}
+
+	peer.StatusSet(LastUpdate, int64(0))
+	peer.StatusSet(PeerState, PeerStatusBroken)
+	err = peer.periodicUpdate()
+	if err == nil {
+		t.Fatalf("got no error but expected broken peer")
+	}
+	if err := assertLike("waiting for peer to recover", err.Error()); err != nil {
+		t.Error(err)
+	}
+
 	if err := StopTestPeer(peer); err != nil {
 		panic(err.Error())
 	}
@@ -199,6 +235,78 @@ func TestPeerDeltaUpdate(t *testing.T) {
 
 	err := peer.data.UpdateDelta(0, 0)
 	if err != nil {
+		t.Error(err)
+	}
+
+	if err := StopTestPeer(peer); err != nil {
+		panic(err.Error())
+	}
+}
+
+func TestPeerUpdateResume(t *testing.T) {
+	peer := StartTestPeer(1, 10, 10)
+	PauseTestPeers(peer)
+
+	err := peer.ResumeFromIdle()
+	if err != nil {
+		t.Error(err)
+	}
+
+	if err := StopTestPeer(peer); err != nil {
+		panic(err.Error())
+	}
+}
+
+func TestPeerInitSerial(t *testing.T) {
+	peer := StartTestPeer(1, 10, 10)
+	PauseTestPeers(peer)
+
+	err := peer.initAllTablesSerial(peer.data)
+	if err != nil {
+		t.Error(err)
+	}
+
+	if err := StopTestPeer(peer); err != nil {
+		panic(err.Error())
+	}
+}
+
+func TestLMDPeerUpdate(t *testing.T) {
+	peer := StartTestPeer(3, 10, 10)
+	PauseTestPeers(peer)
+
+	peer.StatusSet(LastUpdate, int64(0))
+	peer.SetFlag(LMD)
+	peer.SetFlag(MultiBackend)
+	err := peer.periodicUpdateLMD(true)
+	if err != nil {
+		t.Error(err)
+	}
+
+	peer.StatusSet(LastUpdate, int64(0))
+	peer.ResetFlags()
+	peer.SetFlag(MultiBackend)
+	err = peer.periodicUpdateMultiBackends(true)
+	if err != nil {
+		t.Error(err)
+	}
+
+	if err := StopTestPeer(peer); err != nil {
+		panic(err.Error())
+	}
+}
+
+func TestPeerLog(t *testing.T) {
+	peer := StartTestPeer(1, 10, 10)
+	PauseTestPeers(peer)
+
+	peer.setBroken("test")
+	peer.logPeerStatus(log.Debugf)
+	err := peer.checkRestartRequired(fmt.Errorf("test"))
+	if err == nil {
+		t.Fatalf("got no error but expected broken peer")
+	}
+	if err := assertLike("test", err.Error()); err != nil {
 		t.Error(err)
 	}
 

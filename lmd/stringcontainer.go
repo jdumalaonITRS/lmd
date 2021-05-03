@@ -6,7 +6,6 @@ import (
 	"io/ioutil"
 )
 
-// DefaultCompressionMinimumSize sets the default minimum number of characters to use compression
 const DefaultCompressionMinimumSize = 500
 
 // CompressionMinimumSize sets the minimum number of characters to use compression
@@ -18,7 +17,7 @@ var CompressionLevel = gzip.DefaultCompression
 // StringContainer wraps large strings
 type StringContainer struct {
 	StringData     string
-	CompressedData *[]byte
+	CompressedData []byte
 }
 
 // NewStringContainer returns a new StringContainer
@@ -53,10 +52,9 @@ func (s *StringContainer) Set(data *string) {
 		s.CompressedData = nil
 		return
 	}
-	by := b.Bytes()
-	s.CompressedData = &by
+	s.CompressedData = b.Bytes()
 	if log.IsV(LogVerbosityTrace) {
-		log.Tracef("compressed string from %d to %d (%.1f%%)", len(*data), len(s.StringData), 100-(float64(len(s.StringData))/float64(len(*data))*100))
+		log.Tracef("compressed string from %d to %d (%.1f%%)", len(*data), len(s.CompressedData), 100-(float64(len(s.CompressedData))/float64(len(*data))*100))
 	}
 }
 
@@ -73,7 +71,7 @@ func (s *StringContainer) StringRef() *string {
 	if s.CompressedData == nil {
 		return &s.StringData
 	}
-	r, err := gzip.NewReader(bytes.NewReader(*s.CompressedData))
+	r, err := gzip.NewReader(bytes.NewReader(s.CompressedData))
 	if err != nil {
 		log.Errorf("failed to create gzip reader: %s", err.Error())
 		str := ""

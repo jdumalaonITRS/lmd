@@ -30,14 +30,16 @@ type Response struct {
 	Error         error             // error object if the query was not successful
 	RawResults    *RawResultSet     // collected results from peers
 	ResultTotal   int
+	RowsScanned   int // total number of data rows scanned for this result
 	Failed        map[string]string
 	SelectedPeers []*Peer
 }
 
 // PeerResponse is the sub result from a peer before merged into the end result
 type PeerResponse struct {
-	Rows  []*DataRow // set of datarows
-	Total int        // total number of matched rows regardless of any limits or offsets
+	Rows        []*DataRow // set of datarows
+	Total       int        // total number of matched rows regardless of any limits or offsets
+	RowsScanned int        // total number of rows scanned to create result
 }
 
 // NewResponse creates a new response object for a given request
@@ -109,7 +111,7 @@ func NewResponse(req *Request) (res *Response, err error) {
 	default:
 		// normal requests
 		res.RawResults = &RawResultSet{}
-		res.RawResults.Sort = &req.Sort
+		res.RawResults.Sort = req.Sort
 		res.BuildLocalResponse()
 		res.RawResults.PostProcessing(res)
 	}
@@ -155,8 +157,8 @@ func (res *Response) Less(i, j int) bool {
 			if s.Group {
 				index = 0
 			}
-			s1 := *interface2stringNoDedup(res.Result[i][index])
-			s2 := *interface2stringNoDedup(res.Result[j][index])
+			s1 := interface2stringNoDedup(res.Result[i][index])
+			s2 := interface2stringNoDedup(res.Result[j][index])
 			if s1 == s2 {
 				continue
 			}
@@ -190,7 +192,8 @@ func (req *Request) ExpandRequestedBackends() (err error) {
 	PeerMapLock.RLock()
 	defer PeerMapLock.RUnlock()
 	if len(req.Backends) == 0 {
-		for _, p := range PeerMap {
+		for id := range PeerMap {
+			p := PeerMap[id]
 			req.BackendsMap[p.ID] = p.ID
 		}
 		return
@@ -213,7 +216,7 @@ func (res *Response) PostProcessing() {
 	if len(res.Request.Stats) > 0 {
 		return
 	}
-	log.Tracef("PostProcessing")
+	logWith(res).Tracef("PostProcessing")
 	if res.Result == nil {
 		res.Result = make(ResultSet, 0)
 	}
@@ -224,7 +227,7 @@ func (res *Response) PostProcessing() {
 			t1 := time.Now()
 			sort.Sort(res)
 			duration := time.Since(t1)
-			log.Debugf("sorting result took %s", duration.String())
+			logWith(res).Debugf("sorting result took %s", duration.String())
 		}
 	}
 
@@ -252,17 +255,17 @@ func (res *Response) CalculateFinalStats() {
 	if len(res.Request.Stats) == 0 {
 		return
 	}
-	hasColumns := len(res.Request.Columns)
-	if hasColumns == 0 && len(res.Request.StatsResult) == 0 {
-		if res.Request.StatsResult == nil {
-			res.Request.StatsResult = make(ResultSetStats)
-		}
-		res.Request.StatsResult[""] = createLocalStatsCopy(&res.Request.Stats)
+	if res.Request.StatsResult == nil {
+		res.Request.StatsResult = NewResultSetStats()
 	}
-	res.Result = make(ResultSet, len(res.Request.StatsResult))
+	hasColumns := len(res.Request.Columns)
+	if hasColumns == 0 && len(res.Request.StatsResult.Stats) == 0 {
+		res.Request.StatsResult.Stats[""] = createLocalStatsCopy(res.Request.Stats)
+	}
+	res.Result = make(ResultSet, len(res.Request.StatsResult.Stats))
 
 	j := 0
-	for key, stats := range res.Request.StatsResult {
+	for key, stats := range res.Request.StatsResult.Stats {
 		rowSize := len(stats)
 		rowSize += hasColumns
 		res.Result[j] = make([]interface{}, rowSize)
@@ -287,6 +290,7 @@ func (res *Response) CalculateFinalStats() {
 			}
 		}
 		j++
+		res.RowsScanned += res.Request.StatsResult.RowsScanned
 	}
 
 	if hasColumns > 0 {
@@ -297,6 +301,7 @@ func (res *Response) CalculateFinalStats() {
 		}
 		sort.Sort(res)
 	}
+	res.ResultTotal += len(res.Result)
 }
 
 func finalStatsApply(s *Filter) (res float64) {
@@ -324,38 +329,60 @@ func finalStatsApply(s *Filter) (res float64) {
 	return
 }
 
-// Send writes converts the result object to a livestatus answer and writes the resulting bytes back to the client.
+// Send converts the result object to a livestatus answer and writes the resulting bytes back to the client.
 func (res *Response) Send(c net.Conn) (size int64, err error) {
+	if res.Request.ResponseFixed16 {
+		return res.SendFixed16(c)
+	}
+	return res.SendUnbuffered(c)
+}
+
+// SendFixed16 converts the result object to a livestatus answer and writes the resulting bytes back to the client.
+func (res *Response) SendFixed16(c net.Conn) (size int64, err error) {
 	resBuffer, err := res.Buffer()
 	if err != nil {
 		return
 	}
 	size = int64(resBuffer.Len()) + 1
-	if res.Request.ResponseFixed16 {
-		if log.IsV(LogVerbosityTrace) {
-			log.Tracef("write: %s", fmt.Sprintf("%d %11d", res.Code, size))
-		}
-		_, err = fmt.Fprintf(c, "%d %11d\n", res.Code, size)
-		if err != nil {
-			log.Warnf("write error: %s", err.Error())
-			return
-		}
+	headerFixed16 := fmt.Sprintf("%d %11d", res.Code, size)
+	logWith(res).Tracef("write: %s", headerFixed16)
+	_, err = fmt.Fprintf(c, "%s\n", headerFixed16)
+	if err != nil {
+		logWith(res).Warnf("write error: %s", err.Error())
+		return
 	}
 	if log.IsV(LogVerbosityTrace) {
-		log.Tracef("write: %s", resBuffer.Bytes())
+		logWith(res).Tracef("write: %s", resBuffer.Bytes())
 	}
 	written, err := resBuffer.WriteTo(c)
 	if err != nil {
-		log.Warnf("write error: %s", err.Error())
-		return
-	}
-	if written != size-1 {
-		log.Warnf("write error: written %d, size: %d", written, size)
+		logWith(res).Warnf("write error: %s", err.Error())
 		return
 	}
 	localAddr := c.LocalAddr().String()
-	promFrontendBytesSend.WithLabelValues(localAddr).Add(float64(size))
+	promFrontendBytesSend.WithLabelValues(localAddr).Add(float64(written + 1))
+	if written != size-1 {
+		logWith(res).Warnf("write error: written %d, size: %d", written, size)
+		return
+	}
 	_, err = c.Write([]byte("\n"))
+	return
+}
+
+// SendUnbuffered directly prints the result to the client connection
+func (res *Response) SendUnbuffered(c io.Writer) (size int64, err error) {
+	countingWriter := NewWriteCounter(c)
+	if res.Request.OutputFormat == OutputFormatWrappedJSON {
+		err = res.WrappedJSON(countingWriter)
+	} else {
+		err = res.JSON(countingWriter)
+	}
+	if err != nil {
+		logWith(res).Warnf("write error: %s", err.Error())
+		return
+	}
+	_, err = countingWriter.Write([]byte("\n"))
+	size = countingWriter.Count
 	return
 }
 
@@ -363,7 +390,7 @@ func (res *Response) Send(c net.Conn) (size int64, err error) {
 func (res *Response) Buffer() (*bytes.Buffer, error) {
 	buf := new(bytes.Buffer)
 	if res.Error != nil {
-		log.Warnf("sending error response: %d - %s", res.Code, res.Error.Error())
+		logWith(res).Warnf("sending error response: %d - %s", res.Code, res.Error.Error())
 		buf.WriteString(res.Error.Error())
 		return buf, nil
 	}
@@ -397,6 +424,7 @@ func (res *Response) JSON(buf io.Writer) error {
 	if err != nil {
 		return fmt.Errorf("JSON: %w", err)
 	}
+	json.Reset(nil)
 	return nil
 }
 
@@ -407,8 +435,17 @@ func (res *Response) WrappedJSON(buf io.Writer) error {
 
 	json.WriteRaw("{\"data\":\n[")
 	res.WriteDataResponse(json)
-	json.WriteRaw("]\n,\"failed\":")
-	json.WriteVal(res.Failed)
+	json.WriteRaw("]\n,\"failed\": {")
+	num := 0
+	for k, v := range res.Failed {
+		if num > 0 {
+			json.WriteMore()
+		}
+		json.WriteObjectField(k)
+		json.WriteString(v)
+		num++
+	}
+	json.WriteObjectEnd()
 
 	// add optional columns header as first row
 	if res.SendColumnsHeader() {
@@ -416,27 +453,39 @@ func (res *Response) WrappedJSON(buf io.Writer) error {
 		res.WriteColumnsResponse(json)
 	}
 
+	json.WriteRaw(fmt.Sprintf("\n,\"rows_scanned\":%d", res.RowsScanned))
 	json.WriteRaw(fmt.Sprintf("\n,\"total_count\":%d}", res.ResultTotal))
 	err := json.Flush()
 	if err != nil {
 		return fmt.Errorf("WrappedJSON: %w", err)
 	}
+	json.Reset(nil)
 	return nil
 }
 
 // WriteDataResponse writes the data part of the result
 func (res *Response) WriteDataResponse(json *jsoniter.Stream) {
-	if res.Result != nil {
+	switch {
+	case res.Result != nil:
 		// append result row by row
 		for i := range res.Result {
 			if i > 0 {
-				json.WriteRaw(",")
+				json.WriteRaw(",\n")
+				json.Flush()
 			}
-			json.WriteVal(res.Result[i])
+			json.WriteArrayStart()
+			for k := range res.Result[i] {
+				if k > 0 {
+					json.WriteMore()
+				}
+				json.WriteVal(res.Result[i][k])
+			}
+			json.WriteArrayEnd()
 		}
-	} else {
+	case res.RawResults != nil:
 		// unprocessed result?
 		res.ResultTotal = res.RawResults.Total
+		res.RowsScanned = res.RawResults.RowsScanned
 
 		// PeerLockModeFull means we have to lock all peers before creating the result
 		if len(res.RawResults.DataResult) > 0 && res.RawResults.DataResult[0].DataStore.PeerLockMode == PeerLockModeFull {
@@ -446,10 +495,13 @@ func (res *Response) WriteDataResponse(json *jsoniter.Stream) {
 
 		for i := range res.RawResults.DataResult {
 			if i > 0 {
-				json.WriteRaw(",")
+				json.WriteRaw(",\n")
+				json.Flush()
 			}
-			res.RawResults.DataResult[i].WriteJSON(json, &res.Request.RequestColumns)
+			res.RawResults.DataResult[i].WriteJSON(json, res.Request.RequestColumns)
 		}
+	default:
+		logWith(res).Errorf("response contains no result at all")
 	}
 }
 
@@ -457,18 +509,18 @@ func (res *Response) WriteDataResponse(json *jsoniter.Stream) {
 func (res *Response) WriteDataResponseRowLocked(json *jsoniter.Stream) {
 	for i := range res.RawResults.DataResult {
 		if i > 0 {
-			json.WriteRaw(",")
+			json.WriteRaw(",\n")
 		}
 		row := res.RawResults.DataResult[i]
 		row.DataStore.Peer.Lock.RLock()
-		row.WriteJSON(json, &res.Request.RequestColumns)
+		row.WriteJSON(json, res.Request.RequestColumns)
 		row.DataStore.Peer.Lock.RUnlock()
 	}
 }
 
 // WriteColumnsResponse writes the columns header
 func (res *Response) WriteColumnsResponse(json *jsoniter.Stream) {
-	cols := make([]interface{}, len(res.Request.RequestColumns)+len(res.Request.Stats))
+	cols := make([]string, len(res.Request.RequestColumns)+len(res.Request.Stats))
 	for k := 0; k < len(res.Request.RequestColumns); k++ {
 		if k < len(res.Request.Columns) {
 			cols[k] = res.Request.Columns[k]
@@ -483,7 +535,14 @@ func (res *Response) WriteColumnsResponse(json *jsoniter.Stream) {
 		buffer.WriteString(strconv.Itoa(i + 1))
 		cols[index] = buffer.String()
 	}
-	json.WriteVal(cols)
+	json.WriteArrayStart()
+	for i, s := range cols {
+		if i > 0 {
+			json.WriteMore()
+		}
+		json.WriteString(s)
+	}
+	json.WriteArrayEnd()
 	json.WriteRaw("\n")
 }
 
@@ -498,6 +557,7 @@ func (res *Response) BuildLocalResponse() {
 			result := res.RawResults
 			for subRes := range resultcollector {
 				result.Total += subRes.Total
+				result.RowsScanned += subRes.RowsScanned
 				result.DataResult = append(result.DataResult, subRes.Rows...)
 			}
 			waitChan <- true
@@ -543,13 +603,13 @@ func (res *Response) BuildLocalResponse() {
 			// make sure we log panics properly
 			defer logPanicExitPeer(peer)
 
-			log.Tracef("[%s] starting local data computation", peer.Name)
+			logWith(peer, res).Tracef("starting local data computation")
 			defer wg.Done()
 
 			res.BuildLocalResponseData(store, resultcollector)
 		}(p, waitgroup)
 	}
-	log.Tracef("waiting...")
+	logWith(res).Tracef("waiting...")
 
 	waitgroup.Wait()
 	if resultcollector != nil {
@@ -557,7 +617,7 @@ func (res *Response) BuildLocalResponse() {
 		<-waitChan
 	}
 
-	log.Tracef("waiting for all local data computations done")
+	logWith(res).Tracef("waiting for all local data computations done")
 }
 
 // MergeStats merges stats result into final result set
@@ -565,19 +625,21 @@ func (res *Response) MergeStats(stats *ResultSetStats) {
 	res.Lock.Lock()
 	defer res.Lock.Unlock()
 	if res.Request.StatsResult == nil {
-		res.Request.StatsResult = make(ResultSetStats)
+		res.Request.StatsResult = NewResultSetStats()
 	}
 	// apply stats queries
-	for key, stats := range *stats {
-		if _, ok := res.Request.StatsResult[key]; !ok {
-			res.Request.StatsResult[key] = stats
+	for key, stats := range stats.Stats {
+		if _, ok := res.Request.StatsResult.Stats[key]; !ok {
+			res.Request.StatsResult.Stats[key] = stats
 		} else {
 			for i := range stats {
 				s := stats[i]
-				res.Request.StatsResult[key][i].ApplyValue(s.Stats, s.StatsCount)
+				res.Request.StatsResult.Stats[key][i].ApplyValue(s.Stats, s.StatsCount)
 			}
 		}
 	}
+	res.Request.StatsResult.Total += stats.Total
+	res.Request.StatsResult.RowsScanned += stats.RowsScanned
 }
 
 // BuildPassThroughResult passes a query transparently to one or more remote sites and builds the response
@@ -641,15 +703,15 @@ func (res *Response) BuildPassThroughResult() {
 			// make sure we log panics properly
 			defer logPanicExitPeer(peer)
 
-			log.Debugf("[%s] starting passthrough request", peer.Name)
+			logWith(peer, passthroughRequest).Debugf("starting passthrough request")
 			defer wg.Done()
 
 			peer.PassThroughQuery(res, passthroughRequest, virtualColumns, columnsIndex)
 		}(p, waitgroup)
 	}
-	log.Tracef("waiting...")
+	logWith(passthroughRequest).Tracef("waiting...")
 	waitgroup.Wait()
-	log.Debugf("waiting for passed through requests done")
+	logWith(passthroughRequest).Debugf("waiting for passed through requests done")
 }
 
 // SendColumnsHeader determines if the response should contain the columns header
@@ -687,7 +749,7 @@ func SpinUpPeers(peers []*Peer) {
 			// make sure we log panics properly
 			defer logPanicExitPeer(peer)
 			defer wg.Done()
-			logDebugError(peer.ResumeFromIdle())
+			LogErrors(peer.ResumeFromIdle())
 		}(p, waitgroup)
 	}
 	waitTimeout(waitgroup, SpinUpPeersTimeout)
@@ -697,7 +759,7 @@ func SpinUpPeers(peers []*Peer) {
 // BuildLocalResponseData returns the result data for a given request
 func (res *Response) BuildLocalResponseData(store *DataStore, resultcollector chan *PeerResponse) {
 	ds := store.DataSet
-	log.Tracef("BuildLocalResponseData: %s", store.PeerName)
+	logWith(store.PeerName, res).Tracef("BuildLocalResponseData")
 
 	// for some tables its faster to lock the table only once
 	if store.PeerLockMode == PeerLockModeFull && ds != nil {
@@ -741,7 +803,9 @@ func (res *Response) gatherResultRows(store *DataStore, resultcollector chan *Pe
 	breakOnLimit := res.Request.OutputFormat != OutputFormatWrappedJSON
 
 Rows:
-	for _, row := range store.Data {
+	for _, row := range store.GetPreFilteredData(req.Filter) {
+		result.RowsScanned++
+
 		// does our filter match?
 		for _, f := range req.Filter {
 			if !row.MatchFilter(f) {
@@ -768,11 +832,13 @@ Rows:
 }
 
 func (res *Response) gatherStatsResult(store *DataStore) *ResultSetStats {
-	localStats := make(ResultSetStats)
+	result := NewResultSetStats()
 	req := res.Request
+	localStats := result.Stats
 
 Rows:
-	for _, row := range store.Data {
+	for _, row := range store.GetPreFilteredData(req.Filter) {
+		result.RowsScanned++
 		// does our filter match?
 		for _, f := range req.Filter {
 			if !row.MatchFilter(f) {
@@ -784,28 +850,22 @@ Rows:
 			continue Rows
 		}
 
+		result.Total++
+
 		key := row.getStatsKey(res)
 		stat := localStats[key]
 		if stat == nil {
-			stat = createLocalStatsCopy(&req.Stats)
+			stat = createLocalStatsCopy(req.Stats)
 			localStats[key] = stat
 		}
 
 		// count stats
-		for i := range req.Stats {
-			s := req.Stats[i]
-			// avg/sum/min/max are passed through, they don't have filter
-			// counter must match their filter
-			if s.StatsType == Counter {
-				if row.MatchFilter(s) {
-					stat[i].Stats++
-					stat[i].StatsCount++
-				}
-			} else {
-				stat[i].ApplyValue(row.GetFloat(s.Column), 1)
-			}
+		if req.StatsGrouped == nil {
+			row.CountStats(req.Stats, stat)
+		} else {
+			row.CountStats(req.StatsGrouped, stat)
 		}
 	}
 
-	return &localStats
+	return result
 }

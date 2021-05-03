@@ -3,17 +3,16 @@ package main
 import (
 	"crypto/tls"
 	"crypto/x509"
-	"errors"
 	"fmt"
-	"io"
 	"io/ioutil"
 	"net"
 	"net/http"
 	"os"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
+
+	"github.com/sasha-s/go-deadlock"
 )
 
 const (
@@ -33,258 +32,75 @@ const (
 // Listener is the object which handles incoming connections
 type Listener struct {
 	noCopy           noCopy
-	ConnectionString string
-	shutdownChannel  chan bool
-	connection       net.Listener
+	Lock             *deadlock.RWMutex // must be used for when changing config
 	GlobalConfig     *Config
+	connectionString string
+	Connection       net.Listener
 	waitGroupDone    *sync.WaitGroup
 	waitGroupInit    *sync.WaitGroup
 	openConnections  int64
+	queryStats       *QueryStats
 }
 
 // NewListener creates a new Listener object
-func NewListener(localConfig *Config, listen string, waitGroupInit *sync.WaitGroup, waitGroupDone *sync.WaitGroup, shutdownChannel chan bool) *Listener {
+func NewListener(localConfig *Config, listen string, waitGroupInit *sync.WaitGroup, waitGroupDone *sync.WaitGroup, qStat *QueryStats) *Listener {
 	l := Listener{
-		ConnectionString: listen,
-		shutdownChannel:  shutdownChannel,
+		Lock:             new(deadlock.RWMutex),
 		GlobalConfig:     localConfig,
+		connectionString: listen,
 		waitGroupDone:    waitGroupDone,
 		waitGroupInit:    waitGroupInit,
+		queryStats:       qStat,
 	}
 	go func() {
 		defer logPanicExit()
-		l.Listen()
+		l.handle()
 	}()
 	return &l
 }
 
-// QueryServer handles a single client connection.
-// It returns any error encountered.
-func QueryServer(c net.Conn, conf *Config) error {
-	localAddr := c.LocalAddr().String()
-	keepAlive := false
-	remote := c.RemoteAddr().String()
-	defer c.Close()
-	if remote == "" {
-		remote = "unknown"
-	}
-
-	for {
-		if !keepAlive {
-			promFrontendConnections.WithLabelValues(localAddr).Inc()
-			log.Debugf("incoming request from: %s to %s", remote, localAddr)
-			logDebugError(c.SetDeadline(time.Now().Add(RequestReadTimeout)))
-		}
-
-		reqs, err := ParseRequests(c)
-		if err != nil {
-			return sendErrorResponse(c, keepAlive, remote, err)
-		}
-		switch {
-		case len(reqs) > 0:
-			promFrontendQueries.WithLabelValues(localAddr).Add(float64(len(reqs)))
-			keepAlive, err = ProcessRequests(reqs, c, remote, conf)
-
-			// keep open keepalive request until either the client closes the connection or the deadline timeout is hit
-			if keepAlive {
-				log.Debugf("keepalive connection from %s, waiting for more requests", remote)
-				logDebugError(c.SetDeadline(time.Now().Add(RequestReadTimeout)))
-				continue
-			}
-		case keepAlive:
-			// wait up to deadline after the last keep alive request
-			time.Sleep(KeepAliveWaitInterval)
-			continue
-		default:
-			err = errors.New("bad request: empty request")
-			logDebugError2((&Response{Code: 400, Request: &Request{}, Error: err}).Send(c))
-			return err
-		}
-
-		return err
-	}
-}
-
-// ProcessRequests creates response for all given requests
-func sendErrorResponse(c net.Conn, keepAlive bool, remote string, err error) error {
-	if err, ok := err.(net.Error); ok {
-		if keepAlive {
-			log.Debugf("closing keepalive connection from %s", remote)
-		} else {
-			log.Debugf("network error from %s: %s", remote, err.Error())
-		}
-		return err
-	}
-	if errors.Is(err, io.EOF) {
-		return nil
-	}
-	logDebugError2((&Response{Code: 400, Request: &Request{}, Error: err}).Send(c))
-	return err
-}
-
-// ProcessRequests creates response for all given requests
-func ProcessRequests(reqs []*Request, c net.Conn, remote string, conf *Config) (keepalive bool, err error) {
-	if len(reqs) == 0 {
-		return
-	}
-	commandsByPeer := make(map[string][]string)
-	for _, req := range reqs {
-		t1 := time.Now()
-		if req.Command != "" {
-			for _, pID := range req.BackendsMap {
-				commandsByPeer[pID] = append(commandsByPeer[pID], strings.TrimSpace(req.Command))
-			}
-			continue
-		}
-
-		// send all pending commands so far
-		err = SendRemainingCommands(c, remote, &commandsByPeer)
-		if err != nil {
-			return
-		}
-
-		logDebugError(c.SetDeadline(time.Now().Add(time.Duration(conf.ListenTimeout) * time.Second)))
-		var response *Response
-		response, err = req.GetResponse()
-		if err != nil {
-			if netErr, ok := err.(net.Error); ok {
-				logDebugError2((&Response{Code: 502, Request: req, Error: netErr}).Send(c))
-				return
-			}
-			if peerErr, ok := err.(*PeerError); ok && peerErr.kind == ConnectionError {
-				logDebugError2((&Response{Code: 502, Request: req, Error: peerErr}).Send(c))
-				return
-			}
-			logDebugError2((&Response{Code: 400, Request: req, Error: err}).Send(c))
-			return
-		}
-
-		var size int64
-		size, err = response.Send(c)
-		duration := time.Since(t1)
-		log.Infof("incoming %s request from %s to %s finished in %s, response size: %s", req.Table.String(), remote, c.LocalAddr().String(), duration.String(), ByteCountBinary(size))
-		if duration-time.Duration(req.WaitTimeout)*time.Millisecond > time.Duration(conf.LogSlowQueryThreshold)*time.Second {
-			log.Warnf("slow query finished after %s, response size: %s\n%s", duration.String(), ByteCountBinary(size), strings.TrimSpace(req.String()))
-		} else if size > int64(conf.LogHugeQueryThreshold*1024*1024) {
-			log.Warnf("huge query finished after %s, response size: %s\n%s", duration.String(), ByteCountBinary(size), strings.TrimSpace(req.String()))
-		}
-		if err != nil || !req.KeepAlive {
-			return
-		}
-	}
-
-	// send all remaining commands
-	err = SendRemainingCommands(c, remote, &commandsByPeer)
-	if err != nil {
-		return
-	}
-
-	return reqs[len(reqs)-1].KeepAlive, nil
-}
-
-// SendRemainingCommands sends all queued commands
-func SendRemainingCommands(c net.Conn, remote string, commandsByPeer *map[string][]string) (err error) {
-	if len(*commandsByPeer) == 0 {
-		return
-	}
-	t1 := time.Now()
-	code, msg := SendCommands(*commandsByPeer)
-	// clear the commands queue
-	*commandsByPeer = make(map[string][]string)
-	if code != 200 {
-		_, err = c.Write([]byte(fmt.Sprintf("%d: %s\n", code, msg)))
-		return
-	}
-	log.Infof("incoming command request from %s to %s finished in %s", remote, c.LocalAddr().String(), time.Since(t1))
-	return
-}
-
-// SendCommands sends commands for this request to all selected remote sites.
-// It returns any error encountered.
-func SendCommands(commandsByPeer map[string][]string) (code int, msg string) {
-	code = 200
-	msg = "OK"
-	resultChan := make(chan error, len(commandsByPeer))
-	wg := &sync.WaitGroup{}
-	for pID := range commandsByPeer {
-		PeerMapLock.RLock()
-		p := PeerMap[pID]
-		PeerMapLock.RUnlock()
-		wg.Add(1)
-		go func(peer *Peer) {
-			defer logPanicExitPeer(peer)
-			defer wg.Done()
-			resultChan <- peer.SendCommandsWithRetry(commandsByPeer[peer.ID])
-		}(p)
-	}
-
-	// Wait up to 9.5 seconds for all commands being sent
-	if waitTimeout(wg, PeerCommandTimeout) {
-		code = 202
-		msg = "sending command timed out but will continue in background"
-		return
-	}
-
-	// collect errors
-	for {
-		select {
-		case err := <-resultChan:
-			switch e := err.(type) {
-			case *PeerCommandError:
-				code = e.code
-				msg = e.Error()
-			default:
-				if err != nil {
-					code = 500
-					msg = err.Error()
-				}
-			}
-		default:
-			return
-		}
-	}
-}
-
-// Listen start listening the actual connection
-func (l *Listener) Listen() {
+// handle starts listening on the actual connection
+func (l *Listener) handle() {
 	defer func() {
 		ListenersLock.Lock()
-		delete(Listeners, l.ConnectionString)
+		delete(Listeners, l.connectionString)
 		ListenersLock.Unlock()
 		l.waitGroupDone.Done()
 	}()
 	l.waitGroupDone.Add(1)
-	listen := l.ConnectionString
+	listen := l.connectionString
 	switch {
 	case strings.HasPrefix(listen, "https://"):
 		listen = strings.TrimPrefix(listen, "https://")
-		l.LocalListenerHTTP("https", listen)
+		l.localListenerHTTP("https", listen)
 	case strings.HasPrefix(listen, "http://"):
 		listen = strings.TrimPrefix(listen, "http://")
-		l.LocalListenerHTTP("http", listen)
+		l.localListenerHTTP("http", listen)
 	case strings.HasPrefix(listen, "tls://"):
 		listen = strings.TrimPrefix(listen, "tls://")
 		listen = strings.TrimPrefix(listen, "*") // * means all interfaces
-		l.LocalListenerLivestatus("tls", listen)
+		l.localListenerLivestatus("tls", listen)
 	case strings.Contains(listen, ":"):
 		listen = strings.TrimPrefix(listen, "*") // * means all interfaces
-		l.LocalListenerLivestatus("tcp", listen)
+		l.localListenerLivestatus("tcp", listen)
 	default:
 		// remove stale sockets on start
 		if _, err := os.Stat(listen); err == nil {
 			log.Warnf("removing stale socket: %s", listen)
 			os.Remove(listen)
 		}
-		l.LocalListenerLivestatus("unix", listen)
+		l.localListenerLivestatus("unix", listen)
 	}
 }
 
-// LocalListenerLivestatus starts a listening socket with livestatus protocol.
-func (l *Listener) LocalListenerLivestatus(connType string, listen string) {
+// localListenerLivestatus starts a listening socket with livestatus protocol.
+func (l *Listener) localListenerLivestatus(connType string, listen string) {
 	var err error
 	var c net.Listener
 	if connType == "tls" {
-		tlsConfig, tErr := getTLSListenerConfig(l.GlobalConfig)
+		l.Lock.RLock()
+		tlsConfig, tErr := GetTLSListenerConfig(l.GlobalConfig)
+		l.Lock.RUnlock()
 		if tErr != nil {
 			log.Fatalf("failed to initialize tls %s", tErr.Error())
 		}
@@ -292,7 +108,7 @@ func (l *Listener) LocalListenerLivestatus(connType string, listen string) {
 	} else {
 		c, err = net.Listen(connType, listen)
 	}
-	l.connection = c
+	l.Connection = c
 	if err != nil {
 		log.Fatalf("listen error: %s", err.Error())
 		return
@@ -304,14 +120,6 @@ func (l *Listener) LocalListenerLivestatus(connType string, listen string) {
 	defer log.Infof("%s listener %s shutdown complete", connType, listen)
 	log.Infof("listening for incoming queries on %s %s", connType, listen)
 
-	// Close connection and log shutdown
-	go func() {
-		defer logPanicExit()
-		<-l.shutdownChannel
-		log.Infof("stopping %s listener on %s", connType, listen)
-		c.Close()
-	}()
-
 	l.waitGroupInit.Done()
 
 	for {
@@ -320,33 +128,41 @@ func (l *Listener) LocalListenerLivestatus(connType string, listen string) {
 			continue
 		}
 		if err != nil {
-			// connection closed by shutdown channel
+			log.Infof("stopping %s listener on %s", connType, listen)
 			return
 		}
+
+		l.Lock.Lock()
+		l.openConnections++
+		cl := NewClientConnection(fd, l.GlobalConfig.ListenTimeout, l.GlobalConfig.LogSlowQueryThreshold, l.GlobalConfig.LogHugeQueryThreshold, l.queryStats)
+		promFrontendOpenConnections.WithLabelValues(l.connectionString).Set(float64(l.openConnections))
+		l.Lock.Unlock()
 
 		// background waiting for query to finish/timeout
 		go func() {
 			// make sure we log panics properly
 			defer logPanicExit()
 
-			atomic.AddInt64(&l.openConnections, 1)
-			promFrontendOpenConnections.WithLabelValues(l.ConnectionString).Set(float64(atomic.LoadInt64(&l.openConnections)))
-			handleConnection(fd, l.GlobalConfig)
-			atomic.AddInt64(&l.openConnections, -1)
-			promFrontendOpenConnections.WithLabelValues(l.ConnectionString).Set(float64(atomic.LoadInt64(&l.openConnections)))
+			cl.Handle()
+			l.Lock.Lock()
+			l.openConnections--
+			promFrontendOpenConnections.WithLabelValues(l.connectionString).Set(float64(l.openConnections))
+			l.Lock.Unlock()
 		}()
 	}
 }
 
-// LocalListenerHTTP starts a listening socket with http protocol.
-func (l *Listener) LocalListenerHTTP(httpType string, listen string) {
+// localListenerHTTP starts a listening socket with http protocol.
+func (l *Listener) localListenerHTTP(httpType string, listen string) {
 	// Parse listener address
 	listen = strings.TrimPrefix(listen, "*") // * means all interfaces
 
 	// Listener
 	var c net.Listener
 	if httpType == "https" {
-		tlsConfig, err := getTLSListenerConfig(l.GlobalConfig)
+		l.Lock.RLock()
+		tlsConfig, err := GetTLSListenerConfig(l.GlobalConfig)
+		l.Lock.RUnlock()
 		if err != nil {
 			log.Fatalf("failed to initialize https %s", err.Error())
 		}
@@ -364,14 +180,7 @@ func (l *Listener) LocalListenerHTTP(httpType string, listen string) {
 		}
 		c = ln
 	}
-	l.connection = c
-
-	// Close connection and log shutdown
-	go func() {
-		<-l.shutdownChannel
-		log.Infof("stopping listener on %s", listen)
-		c.Close()
-	}()
+	l.Connection = c
 
 	// Initialize HTTP router
 	router := initializeHTTPRouter()
@@ -385,34 +194,12 @@ func (l *Listener) LocalListenerHTTP(httpType string, listen string) {
 		WriteTimeout: HTTPServerRequestTimeout,
 	}
 	if err := server.Serve(c); err != nil {
+		log.Infof("stopping listener on %s", listen)
 		log.Debugf("http listener finished with: %e", err)
 	}
 }
 
-func handleConnection(c net.Conn, localConfig *Config) {
-	ch := make(chan error, 1)
-	go func() {
-		// make sure we log panics properly
-		defer logPanicExit()
-
-		ch <- QueryServer(c, localConfig)
-	}()
-	select {
-	case err := <-ch:
-		if err != nil {
-			localAddr := c.LocalAddr().String()
-			remote := c.RemoteAddr().String()
-			log.Debugf("client request from %s to %s failed with client error: %s", remote, localAddr, err.Error())
-		}
-	case <-time.After(time.Duration(localConfig.ListenTimeout) * time.Second):
-		localAddr := c.LocalAddr().String()
-		remote := c.RemoteAddr().String()
-		log.Warnf("client request from %s to %s timed out", remote, localAddr)
-	}
-	c.Close()
-}
-
-func getTLSListenerConfig(localConfig *Config) (config *tls.Config, err error) {
+func GetTLSListenerConfig(localConfig *Config) (config *tls.Config, err error) {
 	if localConfig.TLSCertificate == "" || localConfig.TLSKey == "" {
 		log.Fatalf("TLSCertificate and TLSKey configuration items are required for tls connections")
 	}
@@ -420,7 +207,7 @@ func getTLSListenerConfig(localConfig *Config) (config *tls.Config, err error) {
 	if err != nil {
 		return nil, fmt.Errorf("tls.LoadX509KeyPair: %s / %s: %w", localConfig.TLSCertificate, localConfig.TLSKey, err)
 	}
-	config = getMinimalTLSConfig()
+	config = getMinimalTLSConfig(localConfig)
 	config.Certificates = []tls.Certificate{cer}
 	if len(localConfig.TLSClientPems) > 0 {
 		caCertPool := x509.NewCertPool()
