@@ -36,6 +36,7 @@ var VirtualColumnList = []VirtualColumnMapEntry{
 	{Name: "section", StatusKey: Section},
 	{Name: "parent", StatusKey: PeerParent},
 	{Name: "configtool", StatusKey: ConfigTool},
+	{Name: "thruk", StatusKey: ThrukExtras},
 	{Name: "federation_key", StatusKey: SubKey},
 	{Name: "federation_name", StatusKey: SubName},
 	{Name: "federation_addr", StatusKey: SubAddr},
@@ -49,13 +50,12 @@ var VirtualColumnList = []VirtualColumnMapEntry{
 	{Name: "has_long_plugin_output", ResolveFunc: VirtualColHasLongPluginOutput},
 	{Name: "services_with_state", ResolveFunc: VirtualColServicesWithInfo},
 	{Name: "services_with_info", ResolveFunc: VirtualColServicesWithInfo},
-	{Name: "comments", ResolveFunc: VirtualColComments},
 	{Name: "comments_with_info", ResolveFunc: VirtualColCommentsWithInfo},
-	{Name: "downtimes", ResolveFunc: VirtualColDowntimes},
 	{Name: "downtimes_with_info", ResolveFunc: VirtualColDowntimesWithInfo},
 	{Name: "members_with_state", ResolveFunc: VirtualColMembersWithState},
 	{Name: "custom_variables", ResolveFunc: VirtualColCustomVariables},
 	{Name: "total_services", ResolveFunc: VirtualColTotalServices},
+	{Name: "flags", ResolveFunc: VirtualColFlags},
 	{Name: "localtime", ResolveFunc: VirtualColLocaltime},
 	{Name: "empty", ResolveFunc: func(_ *DataRow, _ *Column) interface{} { return "" }}, // return empty string as placeholder for nonexisting columns
 }
@@ -157,16 +157,29 @@ const (
 	// HasDependencyColumn flag is set if the remote site has depends_exec and depends_notify columns
 	HasDependencyColumn
 
-	// HasLastUpdate flag is set if the remote site has a last_update column for hosts and services
+	// HasLastUpdateColumn flag is set if the remote site has a last_update column for hosts and services
 	HasLastUpdateColumn
 
-	// HasLMDLastUpdate flag is set if the remote site has a lmd_last_cache_update column for hosts and services
+	// HasLMDLastCacheUpdateColumn flag is set if the remote site has a lmd_last_cache_update column for hosts and services
 	HasLMDLastCacheUpdateColumn
 
 	// HasLocaltimeColumn flag is set if the remote site has a localtime column
 	HasLocaltimeColumn
+
+	// HasCheckFreshnessColumn flag is set if the remote site has a check_freshness column for services
+	HasCheckFreshnessColumn
+
+	// HasEventHandlerColumn flag is set if the remote site has a event_handler column for hosts
+	HasEventHandlerColumn
+
+	// HasStalenessColumn flag is set if the remote site has a staleness column for hosts and services
+	HasStalenessColumn
+
+	// HasServiceParentsColumn flag is set if remote site support service parents column
+	HasServiceParentsColumn
 )
 
+// OptionalFlagsStrings maps available backend flags to their string value
 var OptionalFlagsStrings = map[OptionalFlags]string{
 	LMD:                         "LMD",
 	MultiBackend:                "MultiBackend",
@@ -179,6 +192,10 @@ var OptionalFlagsStrings = map[OptionalFlags]string{
 	HasLastUpdateColumn:         "HasLastUpdateColumn",
 	HasLMDLastCacheUpdateColumn: "HasLMDLastCacheUpdateColumn",
 	HasLocaltimeColumn:          "HasLocaltimeColumn",
+	HasCheckFreshnessColumn:     "HasCheckFreshnessColumn",
+	HasEventHandlerColumn:       "HasEventHandlerColumn",
+	HasStalenessColumn:          "HasStalenessColumn",
+	HasServiceParentsColumn:     "HasServiceParentsColumn",
 }
 
 // String returns the string representation of used flags

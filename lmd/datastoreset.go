@@ -15,10 +15,6 @@ type DataStoreSet struct {
 	peer   *Peer
 	Lock   *deadlock.RWMutex
 	tables map[TableName]*DataStore
-	cache  struct {
-		comments  map[*DataRow][]int64 // caches hosts/services datarows to list of comments
-		downtimes map[*DataRow][]int64 // caches hosts/services datarows to list of downtimes
-	}
 }
 
 func NewDataStoreSet(peer *Peer) *DataStoreSet {
@@ -137,7 +133,7 @@ func (ds *DataStoreSet) UpdateFull(tables []TableName) (err error) {
 	duration := time.Since(t1)
 	peerStatus := p.StatusGet(PeerState).(PeerStatus)
 	if peerStatus != PeerStatusUp && peerStatus != PeerStatusPending {
-		logWith(p).Infof("site soft recovered from short outage")
+		logWith(p).Infof("site soft recovered from short outage (reason: %s - %s)", peerStatus.String(), p.StatusGet(LastError).(string))
 	}
 	p.Lock.Lock()
 	p.resetErrors()
@@ -185,7 +181,7 @@ func (ds *DataStoreSet) UpdateDelta(from, to int64) (err error) {
 			filterStr = fmt.Sprintf("Filter: last_update >= %v\nFilter: last_update < %v\nAnd: 2\n", from-updateOffset, to-updateOffset)
 		default:
 			filterStr = fmt.Sprintf("Filter: last_check >= %v\nFilter: last_check < %v\nAnd: 2\n", from-updateOffset, to-updateOffset)
-			if ds.peer.GlobalConfig.SyncIsExecuting {
+			if ds.peer.GlobalConfig.SyncIsExecuting && !ds.peer.HasFlag(Shinken) {
 				filterStr += "\nFilter: is_executing = 1\nOr: 2\n"
 			}
 		}
@@ -438,7 +434,9 @@ func (ds *DataStoreSet) UpdateDeltaFullScan(store *DataStore, filterStr string) 
 		logWith(ds, req).Debugf("%s delta scan going to update %d timestamps", store.Table.Name.String(), len(missing))
 		filter := []string{filterStr}
 		filter = append(filter, composeTimestampFilter(missing, "last_check")...)
-		filter = append(filter, "Or: 2\n")
+		if len(filterStr) > 0 {
+			filter = append(filter, "Or: 2\n")
+		}
 		switch {
 		case len(filter) > 100:
 			logWith(ds, req).Warnf("%s delta scan timestamp filter too complex: %d", store.Table.Name.String(), len(missing))
@@ -588,12 +586,12 @@ func (ds *DataStoreSet) UpdateDeltaCommentsOrDowntimes(name TableName) (err erro
 	// reset cache
 	switch name {
 	case TableComments:
-		err = ds.RebuildCommentsCache()
+		err = ds.RebuildCommentsList()
 		if err != nil {
 			return
 		}
 	case TableDowntimes:
-		err = ds.RebuildDowntimesCache()
+		err = ds.RebuildDowntimesList()
 		if err != nil {
 			return
 		}
@@ -714,7 +712,7 @@ func (ds *DataStoreSet) UpdateFullTable(tableName TableName) (err error) {
 	}
 
 	if tableName == TableStatus {
-		LogErrors(p.checkStatusFlags(data))
+		LogErrors(p.checkStatusFlags(ds))
 	}
 
 	duration := time.Since(t1).Truncate(time.Millisecond)
@@ -774,52 +772,57 @@ func (ds *DataStoreSet) updateTimeperiodsData(dataOffset int, store *DataStore, 
 	return
 }
 
-// RebuildCommentsCache updates the comment cache
-func (ds *DataStoreSet) RebuildCommentsCache() (err error) {
+// RebuildCommentsList updates the comments column of hosts/services based on the comments table ids
+func (ds *DataStoreSet) RebuildCommentsList() (err error) {
 	t1 := time.Now()
-	cache, err := ds.buildDowntimeCommentsCache(TableComments)
+	err = ds.buildDowntimeCommentsList(TableComments)
 	if err != nil {
 		return
 	}
-	ds.Lock.Lock()
-	ds.cache.comments = cache
-	ds.Lock.Unlock()
-	duration := time.Since(t1).Truncate(time.Millisecond)
-	logWith(ds).Debugf("comments cache rebuild (%s)", duration)
+	duration := time.Since(t1)
+	logWith(ds).Debugf("comments rebuild (%s)", duration.Truncate(time.Microsecond))
 	return
 }
 
-// RebuildDowntimesCache updates the comment cache
-func (ds *DataStoreSet) RebuildDowntimesCache() (err error) {
+// RebuildDowntimesList updates the downtimes column of hosts/services based on the downtimes table ids
+func (ds *DataStoreSet) RebuildDowntimesList() (err error) {
 	t1 := time.Now()
-	cache, err := ds.buildDowntimeCommentsCache(TableDowntimes)
+	err = ds.buildDowntimeCommentsList(TableDowntimes)
 	if err != nil {
 		return
 	}
-	ds.Lock.Lock()
-	ds.cache.downtimes = cache
-	ds.Lock.Unlock()
-	duration := time.Since(t1).Truncate(time.Millisecond)
-	logWith(ds).Debugf("downtimes cache rebuild (%s)", duration)
+	duration := time.Since(t1)
+	logWith(ds).Debugf("downtimes rebuild (%s)", duration.Truncate(time.Microsecond))
 	return
 }
 
-// buildDowntimesCache returns the downtimes/comments cache
-func (ds *DataStoreSet) buildDowntimeCommentsCache(name TableName) (cache map[*DataRow][]int64, err error) {
-	store := ds.Get(name)
+// buildDowntimeCommentsList updates the downtimes/comments id list for all hosts and services
+func (ds *DataStoreSet) buildDowntimeCommentsList(name TableName) (err error) {
+	ds.Lock.Lock()
+	defer ds.Lock.Unlock()
+
+	store := ds.tables[name]
 	if store == nil {
-		return nil, fmt.Errorf("cannot build cache, peer is down: %s", ds.peer.getError())
+		return fmt.Errorf("cannot build id list, peer is down: %s", ds.peer.getError())
 	}
+	hostStore := ds.tables[TableHosts]
+	if hostStore == nil {
+		return fmt.Errorf("cannot build id list, peer is down: %s", ds.peer.getError())
+	}
+	hostIdx := hostStore.Table.GetColumn(name.String()).Index
 
-	ds.Lock.RLock()
-	defer ds.Lock.RUnlock()
+	serviceStore := ds.tables[TableServices]
+	if serviceStore == nil {
+		return fmt.Errorf("cannot build id list, peer is down: %s", ds.peer.getError())
+	}
+	serviceIdx := serviceStore.Table.GetColumn(name.String()).Index
 
-	cache = make(map[*DataRow][]int64)
+	list := make(map[*DataRow][]int64)
 	idIndex := store.Table.GetColumn("id").Index
 	hostNameIndex := store.Table.GetColumn("host_name").Index
 	serviceDescIndex := store.Table.GetColumn("service_description").Index
-	hostIndex := ds.tables[TableHosts].Index
-	serviceIndex := ds.tables[TableServices].Index2
+	hostIndex := hostStore.Index
+	serviceIndex := serviceStore.Index2
 	for i := range store.Data {
 		row := store.Data[i]
 		key := row.dataString[hostNameIndex]
@@ -831,11 +834,29 @@ func (ds *DataStoreSet) buildDowntimeCommentsCache(name TableName) (cache map[*D
 			obj = hostIndex[key]
 		}
 		id := row.dataInt64[idIndex]
-		cache[obj] = append(cache[obj], id)
+		list[obj] = append(list[obj], id)
 	}
 	promObjectCount.WithLabelValues(ds.peer.Name, name.String()).Set(float64(len(store.Data)))
 
-	return cache, nil
+	// empty current lists
+	for _, d := range hostStore.Data {
+		d.dataInt64List[hostIdx] = emptyInt64List
+	}
+	for _, d := range serviceStore.Data {
+		d.dataInt64List[serviceIdx] = emptyInt64List
+	}
+
+	// store updated lists
+	for d, ids := range list {
+		switch d.DataStore.Table.Name {
+		case TableHosts:
+			d.dataInt64List[hostIdx] = ids
+		case TableServices:
+			d.dataInt64List[serviceIdx] = ids
+		}
+	}
+
+	return
 }
 
 func composeTimestampFilter(timestamps []int64, attribute string) []string {

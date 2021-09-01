@@ -42,7 +42,7 @@ var Build string
 
 const (
 	// VERSION contains the actual lmd version
-	VERSION = "2.0.0"
+	VERSION = "2.0.2"
 	// NAME defines the name of this project
 	NAME = "lmd"
 
@@ -67,21 +67,30 @@ const (
 	// BlockProfileRateInterval sets the profiling interval when started with -profile
 	BlockProfileRateInterval = 10
 
-	// GC Percentage level like GOGC environment
+	// GCPercentage sets gc level like GOGC environment
 	GCPercentage = 30
 
+	// DefaultFilePerm set default permissions for new files
+	DefaultFilePerm = 0644
+
+	// DefaultDirPerm set default permissions for new folders
+	DefaultDirPerm = 0755
+
+	// ThrukMultiBackendMinVersion is the minimum required thruk version
 	ThrukMultiBackendMinVersion = 2.23
 )
 
 // ContextKey is a key used as context key
 type ContextKey string
 
+// available ContextKeys
 const (
 	CtxPeer    ContextKey = "peer"
 	CtxClient  ContextKey = "client"
 	CtxRequest ContextKey = "request"
 )
 
+// AvailableContextKeys set list of available log prefix objects
 var AvailableContextKeys = []ContextKey{CtxPeer, CtxClient, CtxRequest}
 
 // https://github.com/golang/go/issues/8005#issuecomment-190753527
@@ -133,6 +142,8 @@ var flagDeadlock int
 var flagCPUProfile string
 var flagMemProfile string
 var flagCfgOption arrayFlags
+var flagExport string
+var flagImport string
 
 var cpuProfileHandler *os.File
 
@@ -170,6 +181,8 @@ func setFlags() {
 	flag.StringVar(&flagMemProfile, "memprofile", "", "write memory profile to `file`")
 	flag.IntVar(&flagDeadlock, "debug-deadlock", 0, "enable deadlock detection with given timeout")
 	flag.Var(&flagCfgOption, "o", "override settings, ex.: -o Listen=:3333 -o Connections=name,address")
+	flag.StringVar(&flagExport, "export", "", "export/snapshot data to file.")
+	flag.StringVar(&flagImport, "import", "", "start lmd from export/snapshot and do not contact backends.")
 }
 
 func main() {
@@ -179,6 +192,11 @@ func main() {
 
 	// make sure we log panics properly
 	defer logPanicExit()
+
+	if flagExport != "" {
+		mainExport()
+		os.Exit(0)
+	}
 
 	for {
 		exitCode := mainLoop(mainSignalChannel, nil)
@@ -194,13 +212,7 @@ func main() {
 }
 
 func mainLoop(mainSignalChannel chan os.Signal, initChannel chan bool) (exitCode int) {
-	localConfig := NewConfig(flagConfigFile)
-	applyArgFlags(flagCfgOption, localConfig)
-	localConfig.ValidateConfig()
-	ApplyFlags(localConfig)
-	InitLogging(localConfig)
-	localConfig.SetServiceAuthorization()
-	localConfig.SetGroupAuthorization()
+	localConfig := finalFlagsConfig(false)
 
 	CompressionLevel = localConfig.CompressionLevel
 	CompressionMinimumSize = localConfig.CompressionMinimumSize
@@ -214,11 +226,7 @@ func mainLoop(mainSignalChannel chan os.Signal, initChannel chan bool) (exitCode
 	promSaveTempRequests.Set(float64(interface2int(localConfig.SaveTempRequests)))
 	promBackendKeepAlive.Set(float64(interface2int(localConfig.BackendKeepAlive)))
 
-	osSignalChannel := make(chan os.Signal, 1)
-	signal.Notify(osSignalChannel, syscall.SIGHUP)
-	signal.Notify(osSignalChannel, syscall.SIGTERM)
-	signal.Notify(osSignalChannel, os.Interrupt)
-	signal.Notify(osSignalChannel, syscall.SIGINT)
+	osSignalChannel := buildSignalChannel()
 
 	osSignalUsrChannel := make(chan os.Signal, 1)
 	signal.Notify(osSignalUsrChannel, syscall.SIGUSR1)
@@ -229,10 +237,6 @@ func mainLoop(mainSignalChannel chan os.Signal, initChannel chan bool) (exitCode
 	waitGroupInit := &sync.WaitGroup{}
 	waitGroupListener := &sync.WaitGroup{}
 	waitGroupPeers := &sync.WaitGroup{}
-
-	if len(localConfig.Connections) == 0 {
-		log.Fatalf("no connections defined")
-	}
 
 	if len(localConfig.Listen) == 0 {
 		log.Fatalf("no listeners defined")
@@ -258,7 +262,14 @@ func mainLoop(mainSignalChannel chan os.Signal, initChannel chan bool) (exitCode
 	initializeListeners(localConfig, waitGroupListener, waitGroupInit, qStat)
 
 	// start remote connections
-	initializePeers(localConfig, waitGroupPeers, waitGroupInit, shutdownChannel)
+	if flagImport != "" {
+		mainImport(localConfig, waitGroupPeers, waitGroupInit, shutdownChannel, flagImport, osSignalChannel)
+	} else {
+		if len(localConfig.Connections) == 0 {
+			log.Fatalf("no connections defined")
+		}
+		initializePeers(localConfig, waitGroupPeers, waitGroupInit, shutdownChannel)
+	}
 
 	if initChannel != nil {
 		initChannel <- true
@@ -283,6 +294,40 @@ func mainLoop(mainSignalChannel chan os.Signal, initChannel chan bool) (exitCode
 			updateStatistics(qStat)
 		}
 	}
+}
+
+func buildSignalChannel() chan os.Signal {
+	osSignalChannel := make(chan os.Signal, 1)
+	signal.Notify(osSignalChannel, syscall.SIGHUP)
+	signal.Notify(osSignalChannel, syscall.SIGTERM)
+	signal.Notify(osSignalChannel, os.Interrupt)
+	signal.Notify(osSignalChannel, syscall.SIGINT)
+	return osSignalChannel
+}
+
+func mainImport(localConfig *Config, waitGroupPeers *sync.WaitGroup, waitGroupInit *sync.WaitGroup, shutdownChannel chan bool, importFile string, osSignalChannel chan os.Signal) {
+	go func() {
+		sig := <-osSignalChannel
+		mainSignalHandler(sig, shutdownChannel, waitGroupPeers, nil, nil, nil)
+		os.Exit(1)
+	}()
+	err := initializePeersWithImport(localConfig, waitGroupPeers, waitGroupInit, shutdownChannel, importFile)
+	if err != nil {
+		log.Fatalf("%s", err)
+	}
+}
+
+func mainExport() {
+	osSignalChannel := buildSignalChannel()
+	go func() {
+		<-osSignalChannel
+		os.Exit(1)
+	}()
+	err := exportData(flagExport)
+	if err != nil {
+		log.Fatalf("export failed: %s", err)
+	}
+	log.Infof("exported %d peers successfully", len(PeerMapOrder))
 }
 
 func ApplyFlags(conf *Config) {
@@ -470,6 +515,11 @@ func checkFlags() {
 		deadlock.Opts.LogBuf = NewLogWriter("Error")
 	}
 
+	if flagImport != "" && flagExport != "" {
+		fmt.Printf("ERROR: cannot use import and export at the same time.")
+		os.Exit(ExitCritical)
+	}
+
 	createPidFile(flagPidfile)
 }
 
@@ -482,7 +532,7 @@ func createPidFile(path string) {
 	if !checkPidFile(path) {
 		fmt.Fprintf(os.Stderr, "WARNING: removing stale pidfile %s\n", path)
 	}
-	err := ioutil.WriteFile(path, []byte(fmt.Sprintf("%d\n", os.Getpid())), 0664)
+	err := ioutil.WriteFile(path, []byte(fmt.Sprintf("%d\n", os.Getpid())), 0644)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "ERROR: Could not write pidfile: %s\n", err.Error())
 		os.Exit(ExitCritical)
@@ -546,6 +596,7 @@ func applyArgFlags(opts arrayFlags, localConfig *Config) {
 			}
 			con := Connection{
 				Name:   conVal[0],
+				ID:     conVal[0],
 				Source: []string{conVal[1]},
 			}
 			localConfig.Connections = append(localConfig.Connections, con)
@@ -653,8 +704,12 @@ func mainSignalHandler(sig os.Signal, shutdownChannel chan bool, waitGroupPeers 
 			prometheusListener.Close()
 		}
 		// wait one second which should be enough for the listeners
-		waitTimeout(waitGroupListener, time.Second)
-		onExit(qStat)
+		if waitGroupListener != nil {
+			waitTimeout(waitGroupListener, time.Second)
+		}
+		if qStat != nil {
+			onExit(qStat)
+		}
 		return (1)
 	case syscall.SIGHUP:
 		log.Infof("got sighup, reloading configuration...")
@@ -799,5 +854,23 @@ func getMinimalTLSConfig(localConfig *Config) *tls.Config {
 }
 
 func fmtHTTPerr(req *http.Request, err error) string {
-	return (fmt.Sprintf("%s: %v", req.URL.String(), err))
+	if req != nil {
+		return (fmt.Sprintf("%s: %v", req.URL.String(), err))
+	}
+	return (fmt.Sprintf("%v", err))
+}
+
+func finalFlagsConfig(stdoutLogging bool) *Config {
+	localConfig := NewConfig(flagConfigFile)
+	if stdoutLogging {
+		localConfig.LogLevel = "info"
+		localConfig.LogFile = "stdout"
+	}
+	applyArgFlags(flagCfgOption, localConfig)
+	localConfig.ValidateConfig()
+	ApplyFlags(localConfig)
+	InitLogging(localConfig)
+	localConfig.SetServiceAuthorization()
+	localConfig.SetGroupAuthorization()
+	return localConfig
 }

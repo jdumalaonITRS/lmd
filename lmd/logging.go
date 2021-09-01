@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"reflect"
 	"runtime/debug"
 	"strings"
 
@@ -43,7 +44,7 @@ func InitLogging(conf *Config) {
 	var targetWriter io.Writer
 	var err error
 	switch {
-	case conf.LogFile == "":
+	case conf.LogFile == "" || conf.LogFile == "stdout":
 		logFormatter = factorlog.NewStdFormatter(LogColors + LogFormat + LogColorReset)
 		targetWriter = os.Stdout
 	case strings.EqualFold(conf.LogFile, "stderr"):
@@ -149,7 +150,7 @@ func (l *LogPrefixer) Tracef(format string, v ...interface{}) {
 	log.Output(factorlog.TRACE, LoggerCalldepth, fmt.Sprintf(l.prefix()+" "+format, v...))
 }
 
-// LogErrorsPrefix can be used as generic logger with a prefix
+// LogErrors can be used as generic logger with a prefix
 func (l *LogPrefixer) LogErrors(v ...interface{}) {
 	if !log.IsV(LogVerbosityDebug) {
 		return
@@ -169,9 +170,16 @@ func (l *LogPrefixer) LogErrors(v ...interface{}) {
 
 func (l *LogPrefixer) prefix() (prefix string) {
 	for _, p := range l.pre {
-		switch v := p.(type) {
-		case string:
+		if v, ok := p.(string); ok {
 			prefix = fmt.Sprintf("%s[%s]", prefix, v)
+			continue
+		}
+
+		if reflect.ValueOf(p).IsNil() {
+			prefix = fmt.Sprintf("%s[%T(nil)]", prefix, p)
+			continue
+		}
+		switch v := p.(type) {
 		case *Peer:
 			prefix = fmt.Sprintf("%s[%s]", prefix, v.Name)
 		case *Request:

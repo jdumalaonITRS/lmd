@@ -12,6 +12,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/signal"
+	"path"
+	"path/filepath"
 	"reflect"
 	"regexp"
 	"strings"
@@ -38,6 +41,15 @@ func init() {
 	TestPeerWaitGroup = &sync.WaitGroup{}
 
 	once.Do(PrintVersion)
+
+	osSignalChannel := make(chan os.Signal, 1)
+	signal.Notify(osSignalChannel, syscall.SIGTERM)
+	signal.Notify(osSignalChannel, os.Interrupt)
+	signal.Notify(osSignalChannel, syscall.SIGINT)
+	go func() {
+		<-osSignalChannel
+		os.Exit(1)
+	}()
 }
 
 func assertEq(exp, got interface{}) error {
@@ -112,27 +124,22 @@ func StartMockLivestatusSource(nr int, numHosts int, numServices int) (listen st
 
 			if req.Table == TableColumns {
 				// make the peer detect dependency columns
-				b, _ := json.Marshal([][]string{
-					{"hosts", "name"},
-					{"hosts", "depends_exec"},
-					{"services", "description"},
-				})
+				b, _ := json.Marshal(getTestDataColumns(dataFolder))
 				_checkErr2(conn.Write([]byte(fmt.Sprintf("200 %11d\n", len(b)+1))))
 				_checkErr2(conn.Write(b))
 				_checkErr2(conn.Write([]byte("\n")))
 				_checkErr(conn.Close())
 				continue
 			}
+
 			if len(req.Filter) > 0 || len(req.Stats) > 0 {
 				_checkErr2(conn.Write([]byte("200           3\n[]\n")))
 				_checkErr(conn.Close())
 				continue
 			}
 
-			dat, err := ioutil.ReadFile(fmt.Sprintf("%s/%s.json", dataFolder, req.Table.String()))
-			if err != nil {
-				panic("could not read file: " + err.Error())
-			}
+			filename := fmt.Sprintf("%s/%s", dataFolder, req.Table.String())
+			dat := readTestData(filename, req.Columns)
 			_checkErr2(conn.Write([]byte(fmt.Sprintf("%d %11d\n", 200, len(dat)))))
 			_checkErr2(conn.Write(dat))
 			_checkErr(conn.Close())
@@ -154,7 +161,7 @@ func prepareTmpData(dataFolder string, nr int, numHosts int, numServices int) (t
 		if table.Virtual != nil {
 			continue
 		}
-		file, err := os.Create(fmt.Sprintf("%s/%s.json", tempFolder, name.String()))
+		file, err := os.Create(fmt.Sprintf("%s/%s.map", tempFolder, name.String()))
 		if err != nil {
 			panic("failed to create temp file: " + err.Error())
 		}
@@ -183,7 +190,7 @@ func prepareTmpData(dataFolder string, nr int, numHosts int, numServices int) (t
 func prepareTmpDataHostService(dataFolder string, tempFolder string, table *Table, numHosts int, numServices int) {
 	name := table.Name
 	dat, _ := ioutil.ReadFile(fmt.Sprintf("%s/%s.json", dataFolder, name.String()))
-	var raw = [][]interface{}{}
+	var raw = make([]map[string]interface{}, 0)
 	err := json.Unmarshal(dat, &raw)
 	if err != nil {
 		panic("failed to decode: " + err.Error())
@@ -210,47 +217,42 @@ func prepareTmpDataHostService(dataFolder string, tempFolder string, table *Tabl
 		}
 	}
 
-	newData := [][]interface{}{}
-	count := 0
+	newData := []map[string]interface{}{}
 	if name == TableHosts {
-		nameIndex := GetTestColumnIndex(table, "name")
-		aliasIndex := GetTestColumnIndex(table, "alias")
-		servicesIndex := GetTestColumnIndex(table, "services")
+		count := 0
 		for x := range hosts {
 			host := hosts[x]
-			var newObj []interface{}
 			count++
-			if count > num {
-				newObj = make([]interface{}, len(last))
-				copy(newObj, last)
-			} else {
-				newObj = make([]interface{}, len(raw[count-1]))
-				copy(newObj, raw[count-1])
+			src := last
+			if count <= num {
+				src = raw[count-1]
 			}
-			newObj[nameIndex] = host.hostname
-			newObj[aliasIndex] = host.hostname + "_ALIAS"
-			newObj[servicesIndex] = host.services
+			newObj := make(map[string]interface{}, len(src))
+			for key := range src {
+				newObj[key] = src[key]
+			}
+			newObj["name"] = host.hostname
+			newObj["alias"] = host.hostname + "_ALIAS"
+			newObj["services"] = host.services
 			newData = append(newData, newObj)
 		}
 	}
 	if name == TableServices {
-		nameIndex := GetTestColumnIndex(table, "host_name")
-		descIndex := GetTestColumnIndex(table, "description")
 		count := 0
 		for x := range hosts {
 			host := hosts[x]
 			for y := range host.services {
-				var newObj []interface{}
 				count++
-				if count >= num {
-					newObj = make([]interface{}, len(last))
-					copy(newObj, last)
-				} else {
-					newObj = make([]interface{}, len(raw[count]))
-					copy(newObj, raw[count])
+				src := last
+				if count <= num {
+					src = raw[count-1]
 				}
-				newObj[nameIndex] = host.hostname
-				newObj[descIndex] = host.services[y]
+				newObj := make(map[string]interface{}, len(src))
+				for key := range src {
+					newObj[key] = src[key]
+				}
+				newObj["host_name"] = host.hostname
+				newObj["description"] = host.services[y]
 				newData = append(newData, newObj)
 			}
 		}
@@ -266,7 +268,7 @@ func prepareTmpDataHostService(dataFolder string, tempFolder string, table *Tabl
 		}
 	}
 	_checkErr2(buf.Write([]byte("]\n")))
-	_checkErr(ioutil.WriteFile(fmt.Sprintf("%s/%s.json", tempFolder, name.String()), buf.Bytes(), 0644))
+	_checkErr(ioutil.WriteFile(fmt.Sprintf("%s/%s.map", tempFolder, name.String()), buf.Bytes(), 0644))
 }
 
 var TestPeerWaitGroup *sync.WaitGroup
@@ -302,8 +304,8 @@ LogLockTimeout = 10
 		flagConfigFile = configFiles{"test.ini"}
 		TestPeerWaitGroup.Add(1)
 		mainLoop(mainSignalChannel, startedChannel)
-		TestPeerWaitGroup.Done()
 		os.Remove("test.ini")
+		TestPeerWaitGroup.Done()
 	}()
 	<-startedChannel
 }
@@ -331,16 +333,22 @@ func StartTestPeerExtra(numPeers int, numHosts int, numServices int, extraConfig
 	peer = NewPeer(GlobalTestConfig, &Connection{Source: []string{"doesnotexist", "test.sock"}, Name: "Test", ID: "testid"}, TestPeerWaitGroup, testPeerShutdownChannel)
 
 	// wait till backend is available
-	retries := 0
+	waitUntil := time.Now().Add(10 * time.Second)
 	for {
 		err := peer.InitAllTables()
 		if err == nil {
-			break
+			peer.Lock.RLock()
+			peer.data.Lock.RLock()
+			gotPeers := len(peer.data.tables[TableStatus].Data)
+			peer.data.Lock.RUnlock()
+			peer.Lock.RUnlock()
+			if gotPeers == numPeers {
+				break
+			}
 		}
-		// recheck every 100ms
-		time.Sleep(100 * time.Millisecond)
-		retries++
-		if retries > 100 {
+		// recheck every 50ms
+		time.Sleep(50 * time.Millisecond)
+		if time.Now().After(waitUntil) {
 			if err != nil {
 				panic("backend never came online: " + err.Error())
 			} else {
@@ -418,19 +426,13 @@ func StartHTTPMockServer(t *testing.T) (*httptest.Server, func()) {
 			switch {
 			case req.Table == TableColumns:
 				// make the peer detect dependency columns
-				b, _ := json.Marshal([][]string{
-					{"hosts", "name"},
-					{"hosts", "depends_exec"},
-					{"services", "description"},
-				})
+				b, _ := json.Marshal(getTestDataColumns(dataFolder))
 				fmt.Fprintf(w, "%d %11d\n", 200, len(b))
 				fmt.Fprint(w, string(b))
 				return
 			case req.Table != TableNone:
-				dat, err := ioutil.ReadFile(fmt.Sprintf("%s/%s.json", dataFolder, req.Table.String()))
-				if err != nil {
-					panic("could not read file: " + err.Error())
-				}
+				filename := fmt.Sprintf("%s/%s", dataFolder, req.Table.String())
+				dat := readTestData(filename, req.Columns)
 				fmt.Fprintf(w, "%d %11d\n", 200, len(dat))
 				fmt.Fprint(w, string(dat))
 				return
@@ -471,13 +473,86 @@ func GetHTTPMockServerPeer(t *testing.T) (peer *Peer, cleanup func()) {
 	return
 }
 
-func GetTestColumnIndex(table *Table, name string) int {
-	for i := range table.Columns {
-		if table.Columns[i].Name == name {
-			return i
+func convertTestDataMapToList(filename string, columns []string) []byte {
+	dat, err := ioutil.ReadFile(filename + ".map")
+	if err != nil {
+		panic("could not read file: " + err.Error())
+	}
+	hashedData := make([]map[string]interface{}, 0)
+	err = json.Unmarshal(dat, &hashedData)
+	if err != nil {
+		panic("could not parse file: " + err.Error())
+	}
+
+	result := make([]byte, 0)
+	result = append(result, []byte("[")...)
+	for k, rowIn := range hashedData {
+		rowOut := make([]interface{}, len(columns))
+		for i, col := range columns {
+			val, ok := rowIn[col]
+			if !ok {
+				panic(fmt.Sprintf("missing column %s in testdata for file %s.map", col, filename))
+			}
+			rowOut[i] = val
+		}
+		rowBytes, err := json.Marshal(rowOut)
+		if err != nil {
+			panic("could not convert row to json: " + err.Error())
+		}
+		result = append(result, rowBytes...)
+		if k < len(hashedData)-1 {
+			result = append(result, []byte(",\n")...)
 		}
 	}
-	panic(name + " not found")
+	result = append(result, []byte("]\n")...)
+
+	file, err := os.Create(filename + ".json")
+	if err != nil {
+		panic("failed to write json back to file: " + err.Error())
+	}
+	_, err = file.Write(result)
+	if err != nil {
+		panic("failed to write json back to file: " + err.Error())
+	}
+	err = file.Close()
+	if err != nil {
+		panic("failed to write json back to file: " + err.Error())
+	}
+
+	return result
+}
+
+func readTestData(filename string, columns []string) []byte {
+	dat, err := ioutil.ReadFile(filename + ".json")
+	if os.IsNotExist(err) {
+		dat = convertTestDataMapToList(filename, columns)
+	} else if err != nil {
+		panic("could not read file: " + err.Error())
+	}
+	return dat
+}
+
+func getTestDataColumns(dataFolder string) (columns [][]string) {
+	matches, _ := filepath.Glob(dataFolder + "/*.map")
+	for _, match := range matches {
+		tableName := strings.TrimSuffix(path.Base(match), ".map")
+		raw, err := ioutil.ReadFile(match)
+		if err != nil {
+			panic("failed to read json file: " + err.Error())
+		}
+		dat := make([]map[string]interface{}, 0)
+		err = json.Unmarshal(raw, &dat)
+		if err != nil {
+			panic("failed to read json file: " + err.Error())
+		}
+		if len(dat) == 0 {
+			continue
+		}
+		for col := range dat[0] {
+			columns = append(columns, []string{tableName, col})
+		}
+	}
+	return
 }
 
 func _checkErr(err error) {

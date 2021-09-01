@@ -1,25 +1,34 @@
 name: citest
-on: [push, pull_request]
+on:
+  push:
+  pull_request:
+  schedule:
+    - cron: '30 4 * * 1'
 jobs:
   test:
     strategy:
+      fail-fast: false
       matrix:
-        go-version: [1.15.x]
+        go-version:
+          - 1.15.x
+          - 1.16.x
+          - 1.17.x
         os: [ubuntu-latest]
     runs-on: ${{ matrix.os }}
     steps:
+    - uses:  abbbi/github-actions-tune@v1
     - name: Install Go
       uses: actions/setup-go@v2
       with:
         go-version: ${{ matrix.go-version }}
     - uses: actions/checkout@v2
     - run: make clean
+    - run: make updatedeps
+      if: github.event_name != 'pull_request'
+    - run: make citest
     - run: make
     - run: make clean
     - run: make build
     - run: make clean
     - run: make debugbuild
     - run: make clean
-    - run: make updatedeps
-      if: github.event_name != 'pull_request'
-    - run: make citest

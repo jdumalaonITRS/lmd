@@ -372,6 +372,16 @@ func (res *Response) SendFixed16(c net.Conn) (size int64, err error) {
 // SendUnbuffered directly prints the result to the client connection
 func (res *Response) SendUnbuffered(c io.Writer) (size int64, err error) {
 	countingWriter := NewWriteCounter(c)
+	if res.Error != nil {
+		logWith(res).Warnf("sending error response: %d - %s", res.Code, res.Error.Error())
+		_, err = countingWriter.Write([]byte(res.Error.Error()))
+		if err != nil {
+			return
+		}
+		_, err = countingWriter.Write([]byte("\n"))
+		size = countingWriter.Count
+		return
+	}
 	if res.Request.OutputFormat == OutputFormatWrappedJSON {
 		err = res.WrappedJSON(countingWriter)
 	} else {
@@ -442,7 +452,7 @@ func (res *Response) WrappedJSON(buf io.Writer) error {
 			json.WriteMore()
 		}
 		json.WriteObjectField(k)
-		json.WriteString(v)
+		json.WriteString(strings.TrimSpace(v))
 		num++
 	}
 	json.WriteObjectEnd()
@@ -603,7 +613,6 @@ func (res *Response) BuildLocalResponse() {
 			// make sure we log panics properly
 			defer logPanicExitPeer(peer)
 
-			logWith(peer, res).Tracef("starting local data computation")
 			defer wg.Done()
 
 			res.BuildLocalResponseData(store, resultcollector)
@@ -762,9 +771,9 @@ func (res *Response) BuildLocalResponseData(store *DataStore, resultcollector ch
 	logWith(store.PeerName, res).Tracef("BuildLocalResponseData")
 
 	// for some tables its faster to lock the table only once
-	if store.PeerLockMode == PeerLockModeFull && ds != nil {
-		ds.Lock.RLock()
-		defer ds.Lock.RUnlock()
+	if store.PeerLockMode == PeerLockModeFull && ds != nil && ds.peer != nil {
+		ds.peer.Lock.RLock()
+		defer ds.peer.Lock.RUnlock()
 	}
 
 	if !store.Table.WorksUnlocked {

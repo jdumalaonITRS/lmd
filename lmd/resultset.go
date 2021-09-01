@@ -3,6 +3,10 @@ package main
 import (
 	"fmt"
 	"sort"
+	"strings"
+
+	"github.com/a8m/djson"
+	"github.com/buger/jsonparser"
 )
 
 // ResultSet is a list of result rows
@@ -21,6 +25,39 @@ func NewResultSetStats() *ResultSetStats {
 	return &res
 }
 
+// NewResultSet parses resultset from given bytes
+func NewResultSet(data []byte) (res ResultSet, err error) {
+	res = make(ResultSet, 0)
+	offset, jErr := jsonparser.ArrayEach(data, func(rowBytes []byte, _ jsonparser.ValueType, _ int, aErr error) {
+		if aErr != nil {
+			err = aErr
+			return
+		}
+		row, dErr := djson.DecodeArray(rowBytes)
+		if dErr != nil {
+			// try to fix invalid escape sequences and unknown utf8 characters
+			if strings.Contains(dErr.Error(), "invalid character") {
+				rowBytes = bytesToValidUTF8(rowBytes, []byte("\uFFFD"))
+				row, dErr = djson.DecodeArray(rowBytes)
+			}
+			// still failing
+			if dErr != nil {
+				err = dErr
+				return
+			}
+		}
+		res = append(res, row)
+	})
+	// trailing comma error will be ignored
+	if jErr != nil && offset < len(data)-3 {
+		return nil, fmt.Errorf("parserResult jsonparse: %w", jErr)
+	}
+	if err != nil {
+		return nil, err
+	}
+	return res, nil
+}
+
 // Precompress compresses large strings in result set to allow faster updates (compressing would happen during locked update loop otherwise)
 func (res *ResultSet) Precompress(offset int, columns ColumnList) {
 	for i := range columns {
@@ -34,7 +71,7 @@ func (res *ResultSet) Precompress(offset int, columns ColumnList) {
 	}
 }
 
-// Precompress compresses large strings in result set to allow faster updates (compressing would happen during locked update loop otherwise)
+// SortByPrimaryKey sorts the resultset by their primary columns
 func (res *ResultSet) SortByPrimaryKey(table *Table, req *Request) ResultSet {
 	if len(table.PrimaryKey) == 0 {
 		return *res
@@ -112,7 +149,7 @@ func (res *ResultSetSorted) Swap(i, j int) {
 	res.Data[i], res.Data[j] = res.Data[j], res.Data[i]
 }
 
-// ResultPreparedSet is a list of result rows prepared to insert faster
+// ResultPrepared is a list of result rows prepared to insert faster
 type ResultPrepared struct {
 	ResultRow  []interface{}
 	DataRow    *DataRow

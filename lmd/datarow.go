@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	jsoniter "github.com/json-iterator/go"
@@ -99,7 +100,7 @@ func (d *DataRow) GetID2() (string, string) {
 	return id1, id2
 }
 
-// setData creates initial data
+// SetData creates initial data
 func (d *DataRow) SetData(raw []interface{}, columns ColumnList, timestamp int64) error {
 	d.dataString = make([]string, d.DataStore.DataSizes[StringCol])
 	d.dataStringList = make([][]string, d.DataStore.DataSizes[StringListCol])
@@ -275,7 +276,7 @@ func (d *DataRow) GetInt(col *Column) int {
 	panic(fmt.Sprintf("unsupported type: %s", col.StorageType))
 }
 
-// GetInt returns the int64 value for given column
+// GetInt64 returns the int64 value for given column
 func (d *DataRow) GetInt64(col *Column) int64 {
 	switch col.StorageType {
 	case LocalStore:
@@ -329,6 +330,11 @@ func (d *DataRow) GetInt64List(col *Column) []int64 {
 		return interface2int64list(d.getVirtualRowValue(col))
 	}
 	panic(fmt.Sprintf("unsupported type: %s", col.StorageType))
+}
+
+// GetInt64ListByName returns the int64 list for given column name
+func (d *DataRow) GetInt64ListByName(name string) []int64 {
+	return d.GetInt64List(d.DataStore.Table.ColumnsIndex[name])
 }
 
 // GetHashMap returns the hashmap for given column
@@ -582,23 +588,14 @@ func VirtualColMembersWithState(d *DataRow, col *Column) interface{} {
 	return nil
 }
 
-// VirtualColComments returns list of comment IDs
-func VirtualColComments(d *DataRow, col *Column) interface{} {
-	comments, ok := d.DataStore.DataSet.cache.comments[d]
-	if ok {
-		return comments
-	}
-	return emptyInt64List
-}
-
 // VirtualColCommentsWithInfo returns list of comment IDs with additional information
 func VirtualColCommentsWithInfo(d *DataRow, col *Column) interface{} {
 	commentsStore := d.DataStore.DataSet.tables[TableComments]
 	commentsTable := commentsStore.Table
 	authorCol := commentsTable.GetColumn("author")
 	commentCol := commentsTable.GetColumn("comment")
-	comments, ok := d.DataStore.DataSet.cache.comments[d]
-	if !ok {
+	comments := d.GetInt64ListByName("comments")
+	if len(comments) == 0 {
 		return emptyInterfaceList
 	}
 	res := make([]interface{}, 0)
@@ -615,23 +612,14 @@ func VirtualColCommentsWithInfo(d *DataRow, col *Column) interface{} {
 	return res
 }
 
-// VirtualColDowntimes returns list of downtimes IDs
-func VirtualColDowntimes(d *DataRow, col *Column) interface{} {
-	downtimes, ok := d.DataStore.DataSet.cache.downtimes[d]
-	if ok {
-		return downtimes
-	}
-	return emptyInt64List
-}
-
 // VirtualColDowntimesWithInfo returns list of downtimes IDs with additional information
 func VirtualColDowntimesWithInfo(d *DataRow, col *Column) interface{} {
 	downtimesStore := d.DataStore.DataSet.tables[TableDowntimes]
 	downtimesTable := downtimesStore.Table
 	authorCol := downtimesTable.GetColumn("author")
 	commentCol := downtimesTable.GetColumn("comment")
-	downtimes, ok := d.DataStore.DataSet.cache.downtimes[d]
-	if !ok {
+	downtimes := d.GetInt64ListByName("downtimes")
+	if len(downtimes) == 0 {
 		return emptyInterfaceList
 	}
 	res := make([]interface{}, 0)
@@ -661,10 +649,16 @@ func VirtualColCustomVariables(d *DataRow, col *Column) interface{} {
 	return res
 }
 
-// VirtualColTotalServices returns 1 if there is long plugin output, 0 if not
+// VirtualColTotalServices returns number of services
 func VirtualColTotalServices(d *DataRow, col *Column) interface{} {
 	val := d.GetIntByName("num_services")
 	return val
+}
+
+// VirtualColFlags returns flags for peer
+func VirtualColFlags(d *DataRow, col *Column) interface{} {
+	peerflags := OptionalFlags(atomic.LoadUint32(&d.DataStore.Peer.Flags))
+	return peerflags.List()
 }
 
 // getVirtualSubLMDValue returns status values for LMDSub backends
@@ -758,6 +752,12 @@ func (d *DataRow) UpdateValues(dataOffset int, data []interface{}, columns Colum
 		return fmt.Errorf("table %s update failed, data size mismatch, expected %d columns and got %d", d.DataStore.Table.Name.String(), len(columns), len(data))
 	}
 	for i, col := range columns {
+		if col.StorageType != LocalStore {
+			continue
+		}
+		if col.Optional != NoFlags && !d.DataStore.Peer.HasFlag(col.Optional) {
+			continue
+		}
 		i += dataOffset
 		switch col.DataType {
 		case StringCol:
@@ -1319,17 +1319,22 @@ func (d *DataRow) WriteJSONVirtualColumn(jsonwriter *jsoniter.Stream, col *Colum
 	case CustomVarCol:
 		namesCol := d.DataStore.Table.GetColumn("custom_variable_names")
 		valuesCol := d.DataStore.Table.GetColumn("custom_variable_values")
-		names := d.dataStringList[namesCol.Index]
-		values := d.dataStringList[valuesCol.Index]
-		jsonwriter.WriteObjectStart()
-		for i := range names {
-			if i > 0 {
-				jsonwriter.WriteMore()
+		if namesCol.Optional != NoFlags && !d.DataStore.Peer.HasFlag(namesCol.Optional) {
+			jsonwriter.WriteObjectStart()
+			jsonwriter.WriteObjectEnd()
+		} else {
+			names := d.dataStringList[namesCol.Index]
+			values := d.dataStringList[valuesCol.Index]
+			jsonwriter.WriteObjectStart()
+			for i := range names {
+				if i > 0 {
+					jsonwriter.WriteMore()
+				}
+				jsonwriter.WriteObjectField(names[i])
+				jsonwriter.WriteString(values[i])
 			}
-			jsonwriter.WriteObjectField(names[i])
-			jsonwriter.WriteString(values[i])
+			jsonwriter.WriteObjectEnd()
 		}
-		jsonwriter.WriteObjectEnd()
 	case JSONCol:
 		jsonwriter.WriteRaw(d.GetString(col))
 	default:
