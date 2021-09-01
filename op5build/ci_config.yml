@@ -3,21 +3,9 @@ pre:
   steps: |
     set -ex
 
-    # Download golang locally on CentOS 7. In rpmbuild mock environment it's
-    # installed from EPEL.
+    # On EL7 we need to use a the proxy, due to the git version being older than what GO supports when downloading dependencies.
     . /etc/os-release || :
     if [ "$VERSION_ID" == "7" ]; then
-      go_archive=go1.15.5.linux-amd64.tar.gz
-      if ! [ -s /tmp/$go_archive ]; then
-        echo "Downloading $go_archive ..."
-        curl -L -o /tmp/$go_archive https://dl.google.com/go/$go_archive
-      fi
-      chmod -fR u+w go/ || :
-      rm -rf go/
-      tar -xf /tmp/$go_archive
-      export GOPATH="$(pwd)/go"
-      export GOBIN="$GOPATH/bin"
-      export PATH="$GOBIN:$PATH"
       export GOPROXY="https://proxy.golang.org,direct"
     fi
     go env
