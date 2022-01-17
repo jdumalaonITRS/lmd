@@ -1,3 +1,4 @@
+# Remove this comment when releasing LMD 2.0.4
 %global debug_package %{nil}
 %global golang_version 1.15.6
 
