@@ -4,9 +4,22 @@ pre:
     set -ex
 
     # On EL7 we need to use a the proxy, due to the git version being older than what GO supports when downloading dependencies.
+    # We also need to manually install golang due to it requiring a newer version
+    # than what is available on EPEL
     . /etc/os-release || :
     if [ "$VERSION_ID" == "7" ]; then
       export GOPROXY="https://proxy.golang.org,direct"
+      go_archive=go1.16.13.linux-amd64.tar.gz
+      if ! [ -s /tmp/$go_archive ]; then
+        echo "Downloading $go_archive ..."
+        curl -L -o /tmp/$go_archive https://dl.google.com/go/$go_archive
+      fi
+      chmod -fR u+w go/ || :
+      rm -rf go/
+      tar -xf /tmp/$go_archive
+      export GOPATH="$(pwd)/go"
+      export GOBIN="$GOPATH/bin"
+      export PATH="$GOBIN:$PATH"
     fi
     go env
     # Download all dependencies before rpm build.
@@ -18,8 +31,12 @@ post:
   install:
     - make
     - gcc
-    - golang
   steps: |
+    export GOPATH=/root/go
+    export GOBIN=$GOPATH/bin
+    curl -L -o /tmp/go.tar.gz https://dl.google.com/go/go1.16.13.linux-amd64.tar.gz
+    tar -xf /tmp/go.tar.gz -C /root/
+    export PATH=/root/go/bin/:$PATH
     # Using a proxy offers some protection against library makers suddently
     # deleting a git tag in their repo, where go would download libraries.
     export GOPROXY="https://proxy.golang.org,direct"

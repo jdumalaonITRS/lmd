@@ -1,5 +1,5 @@
 %global debug_package %{nil}
-%global golang_version 1.15.6
+%global golang_version 1.16.13
 
 Name:		op5-lmd
 Version:	%{op5version}
@@ -12,7 +12,6 @@ Patch0:		op5build/Makefile.patch
 BuildRoot:	%{_tmppath}/%{name}-%{version}
 
 BuildRequires: git
-BuildRequires: golang >= 1.14
 Requires: op5-naemon
 Requires: monitor-livestatus
 %systemd_requires
@@ -35,6 +34,12 @@ Build with debug symbols for the lmd integration in OP5 Monitor
 %patch0 -p1
 
 %build
+# LMD requires Golang > 1.16, which is not yet in EPEL
+# We manually download it for now
+curl -o go%{golang_version}.linux-amd64.tar.gz https://dl.google.com/go/go%{golang_version}.linux-amd64.tar.gz
+tar -xf go%{golang_version}.linux-amd64.tar.gz -C $HOME/
+# make sure the default golang bin is in our path
+export PATH=$PATH:$HOME/go/bin/
 export GOPROXY=off
 make debugbuild BUILD=OP5-%{version}-debug
 mv lmd/lmd lmd/lmd_debugbuild
@@ -116,6 +121,8 @@ fi
 rm -rf %buildroot
 
 %changelog
+* Tue Jan 25 2022 Jacob Hansen <jhansen@itrsgroup.com> - 2022.2
+- Install go manually as LMD > 2.0.4 requires go 1.16 (not in EPEL yet).
 * Fri Feb 12 2021 Aksel Sjögren <asjogren@itrsgroup.com> - 2021.3
 - Remove EL6 and pre-systemd support.
 - Use golang from OS repos when building package.
