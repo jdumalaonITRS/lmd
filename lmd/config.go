@@ -98,6 +98,7 @@ type Config struct {
 	UpdateOffset               int64
 	TLSMinVersion              string
 	MaxParallelPeerConnections int
+	MaxQueryFilter             int
 }
 
 // NewConfig reads all config files.
@@ -126,10 +127,12 @@ func NewConfig(files []string) *Config {
 		UpdateOffset:               3,
 		TLSMinVersion:              "tls1.1",
 		MaxParallelPeerConnections: 3,
+		MaxQueryFilter:             DefaultMaxQueryFilter,
 	}
 
 	// combine listeners from all files
 	allListeners := make([]string, 0)
+	allConnections := make([]Connection, 0)
 	for _, pattern := range files {
 		configFiles, errGlob := filepath.Glob(pattern)
 		if errGlob != nil {
@@ -150,9 +153,12 @@ func NewConfig(files []string) *Config {
 			}
 			allListeners = append(allListeners, conf.Listen...)
 			conf.Listen = []string{}
+			allConnections = append(allConnections, conf.Connections...)
+			conf.Connections = []Connection{}
 		}
 	}
 	conf.Listen = allListeners
+	conf.Connections = allConnections
 
 	for i := range conf.Connections {
 		for j := range conf.Connections[i].Source {
