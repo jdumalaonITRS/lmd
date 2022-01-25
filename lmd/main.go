@@ -14,7 +14,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net"
 	"net/http"
 	_ "net/http/pprof"
@@ -42,7 +41,7 @@ var Build string
 
 const (
 	// VERSION contains the actual lmd version
-	VERSION = "2.0.3"
+	VERSION = "2.0.4"
 	// NAME defines the name of this project
 	NAME = "lmd"
 
@@ -71,10 +70,13 @@ const (
 	GCPercentage = 30
 
 	// DefaultFilePerm set default permissions for new files
-	DefaultFilePerm = 0644
+	DefaultFilePerm = 0o644
 
 	// DefaultDirPerm set default permissions for new folders
-	DefaultDirPerm = 0755
+	DefaultDirPerm = 0o755
+
+	// DefaultMaxQueryFilter sets the default number of max query filters
+	DefaultMaxQueryFilter = 1000
 
 	// ThrukMultiBackendMinVersion is the minimum required thruk version
 	ThrukMultiBackendMinVersion = 2.23
@@ -565,7 +567,7 @@ func createPidFile(path string) {
 	if !checkPidFile(path) {
 		fmt.Fprintf(os.Stderr, "WARNING: removing stale pidfile %s\n", path)
 	}
-	err := ioutil.WriteFile(path, []byte(fmt.Sprintf("%d\n", os.Getpid())), 0644)
+	err := os.WriteFile(path, []byte(fmt.Sprintf("%d\n", os.Getpid())), 0o644)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "ERROR: Could not write pidfile: %s\n", err.Error())
 		os.Exit(ExitCritical)
@@ -574,7 +576,7 @@ func createPidFile(path string) {
 
 // checkPidFile returns false if pidfile is stale
 func checkPidFile(path string) bool {
-	dat, err := ioutil.ReadFile(path)
+	dat, err := os.ReadFile(path)
 	if err != nil {
 		return true
 	}
@@ -890,7 +892,7 @@ func fmtHTTPerr(req *http.Request, err error) string {
 	if req != nil {
 		return (fmt.Sprintf("%s: %v", req.URL.String(), err))
 	}
-	return (fmt.Sprintf("%v", err))
+	return err.Error()
 }
 
 func (lmd *LMDInstance) finalFlagsConfig(stdoutLogging bool) *Config {
