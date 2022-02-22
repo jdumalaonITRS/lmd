@@ -214,6 +214,13 @@ func NewContactsTable() (t *Table) {
 	t.AddColumn("service_notification_period", Static, StringCol, "The time period in which the contact will be notified about service problems")
 	t.AddColumn("service_notifications_enabled", Static, IntCol, "Wether the contact will be notified about service problems in general (0/1)")
 
+	t.AddExtraColumn("address1", LocalStore, Static, StringCol, Naemon, "Additional address information for the contact")
+	t.AddExtraColumn("address2", LocalStore, Static, StringCol, Naemon, "Additional address information for the contact")
+	t.AddExtraColumn("address3", LocalStore, Static, StringCol, Naemon, "Additional address information for the contact")
+	t.AddExtraColumn("address4", LocalStore, Static, StringCol, Naemon, "Additional address information for the contact")
+	t.AddExtraColumn("address5", LocalStore, Static, StringCol, Naemon, "Additional address information for the contact")
+	t.AddExtraColumn("address6", LocalStore, Static, StringCol, Naemon, "Additional address information for the contact")
+
 	t.AddExtraColumn("custom_variable_names", LocalStore, Dynamic, StringListCol, Naemon, "A list of all custom variables of the contact")
 	t.AddExtraColumn("custom_variable_values", LocalStore, Dynamic, StringListCol, Naemon, "A list of the values of all custom variables of the contact")
 	t.AddExtraColumn("custom_variables", VirtualStore, None, CustomVarCol, NoFlags, "A dictionary of the custom variables")
