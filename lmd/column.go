@@ -246,11 +246,11 @@ type Column struct {
 	noCopy          noCopy
 	Name            string                 // name and primary key
 	Description     string                 // human description
+	Index           int                    // position in datastore
 	DataType        DataType               // Type of this column
 	FetchType       FetchType              // flag wether this columns needs to be updated
 	StorageType     StorageType            // flag how this column is stored
 	Optional        OptionalFlags          // flags if this column is used for certain backends only
-	Index           int                    // position in the DataRow data* fields
 	RefCol          *Column                // reference to column in other table, ex.: host_alias
 	RefColTableName TableName              // shortcut to Column.RefCol.Table.Name
 	Table           *Table                 // reference to the table holding this column
@@ -262,6 +262,7 @@ func NewColumn(table *Table, name string, storage StorageType, update FetchType,
 	col := &Column{
 		Table:       table,
 		Name:        name,
+		Index:       -1,
 		Description: description,
 		StorageType: storage,
 		FetchType:   update,

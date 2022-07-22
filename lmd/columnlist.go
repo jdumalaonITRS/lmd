@@ -8,17 +8,17 @@ import (
 type ColumnList []*Column
 
 // String returns the string representation of a column list
-func (dl *ColumnList) String() string {
-	names := make([]string, 0, len(*dl))
-	for i := range *dl {
-		names = append(names, (*dl)[i].String())
+func (cl *ColumnList) String() string {
+	names := make([]string, 0, len(*cl))
+	for i := range *cl {
+		names = append(names, (*cl)[i].String())
 	}
 	return strings.Join(names, ", ")
 }
 
-func (dl *ColumnList) GetColumnIndex(name string) int {
-	for i := range *dl {
-		if (*dl)[i].String() == name {
+func (cl *ColumnList) GetColumnIndex(name string) int {
+	for i := range *cl {
+		if (*cl)[i].String() == name {
 			return i
 		}
 	}

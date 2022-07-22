@@ -7,7 +7,6 @@ import (
 	"strconv"
 	"strings"
 	"sync/atomic"
-	"time"
 
 	jsoniter "github.com/json-iterator/go"
 	"github.com/lkarlslund/stringdedup"
@@ -20,7 +19,7 @@ type DataRow struct {
 	noCopy                noCopy                 // we don't want to make copies, use references
 	DataStore             *DataStore             // reference to the datastore itself
 	Refs                  map[TableName]*DataRow // contains references to other objects, ex.: hosts from the services table
-	LastUpdate            int64                  // timestamp when this row has been updated
+	LastUpdate            float64                // timestamp when this row has been updated
 	dataString            []string               // stores string data
 	dataInt               []int                  // stores integers
 	dataInt64             []int64                // stores large integers
@@ -33,7 +32,7 @@ type DataRow struct {
 }
 
 // NewDataRow creates a new DataRow
-func NewDataRow(store *DataStore, raw []interface{}, columns ColumnList, timestamp int64, setReferences bool) (d *DataRow, err error) {
+func NewDataRow(store *DataStore, raw []interface{}, columns ColumnList, timestamp float64, setReferences bool) (d *DataRow, err error) {
 	d = &DataRow{
 		LastUpdate: timestamp,
 		DataStore:  store,
@@ -101,16 +100,16 @@ func (d *DataRow) GetID2() (string, string) {
 }
 
 // SetData creates initial data
-func (d *DataRow) SetData(raw []interface{}, columns ColumnList, timestamp int64) error {
-	d.dataString = make([]string, d.DataStore.DataSizes[StringCol])
-	d.dataStringList = make([][]string, d.DataStore.DataSizes[StringListCol])
-	d.dataInt = make([]int, d.DataStore.DataSizes[IntCol])
-	d.dataInt64 = make([]int64, d.DataStore.DataSizes[Int64Col])
-	d.dataInt64List = make([][]int64, d.DataStore.DataSizes[Int64ListCol])
-	d.dataFloat = make([]float64, d.DataStore.DataSizes[FloatCol])
-	d.dataServiceMemberList = make([][]ServiceMember, d.DataStore.DataSizes[ServiceMemberListCol])
-	d.dataInterfaceList = make([][]interface{}, d.DataStore.DataSizes[InterfaceListCol])
-	d.dataStringLarge = make([]StringContainer, d.DataStore.DataSizes[StringLargeCol])
+func (d *DataRow) SetData(raw []interface{}, columns ColumnList, timestamp float64) error {
+	d.dataString = make([]string, d.DataStore.Table.DataSizes[StringCol])
+	d.dataStringList = make([][]string, d.DataStore.Table.DataSizes[StringListCol])
+	d.dataInt = make([]int, d.DataStore.Table.DataSizes[IntCol])
+	d.dataInt64 = make([]int64, d.DataStore.Table.DataSizes[Int64Col])
+	d.dataInt64List = make([][]int64, d.DataStore.Table.DataSizes[Int64ListCol])
+	d.dataFloat = make([]float64, d.DataStore.Table.DataSizes[FloatCol])
+	d.dataServiceMemberList = make([][]ServiceMember, d.DataStore.Table.DataSizes[ServiceMemberListCol])
+	d.dataInterfaceList = make([][]interface{}, d.DataStore.Table.DataSizes[InterfaceListCol])
+	d.dataStringLarge = make([]StringContainer, d.DataStore.Table.DataSizes[StringLargeCol])
 	return d.UpdateValues(0, raw, columns, timestamp)
 }
 
@@ -475,14 +474,14 @@ func (d *DataRow) GetCustomVarValue(col *Column, name string) string {
 		ref := d.Refs[col.RefColTableName]
 		return ref.GetCustomVarValue(col.RefCol, name)
 	}
-	namesCol := d.DataStore.Table.GetColumn("custom_variable_names")
-	valuesCol := d.DataStore.Table.GetColumn("custom_variable_values")
+	namesCol := d.DataStore.GetColumn("custom_variable_names")
 	names := d.dataStringList[namesCol.Index]
-	values := d.dataStringList[valuesCol.Index]
 	for i, n := range names {
 		if n != name {
 			continue
 		}
+		valuesCol := d.DataStore.GetColumn("custom_variable_values")
+		values := d.dataStringList[valuesCol.Index]
 		if i >= len(values) {
 			return ""
 		}
@@ -493,7 +492,7 @@ func (d *DataRow) GetCustomVarValue(col *Column, name string) string {
 
 // VirtualColLocaltime returns current unix timestamp
 func VirtualColLocaltime(d *DataRow, col *Column) interface{} {
-	return float64(time.Now().UnixNano()) / float64(time.Second)
+	return currentUnixTime()
 }
 
 // VirtualColLastStateChangeOrder returns sortable state
@@ -643,8 +642,8 @@ func VirtualColDowntimesWithInfo(d *DataRow, col *Column) interface{} {
 
 // VirtualColCustomVariables returns a custom variables hash
 func VirtualColCustomVariables(d *DataRow, col *Column) interface{} {
-	namesCol := d.DataStore.Table.GetColumn("custom_variable_names")
-	valuesCol := d.DataStore.Table.GetColumn("custom_variable_values")
+	namesCol := d.DataStore.GetColumn("custom_variable_names")
+	valuesCol := d.DataStore.GetColumn("custom_variable_values")
 	names := d.dataStringList[namesCol.Index]
 	values := d.dataStringList[valuesCol.Index]
 	res := make(map[string]string, len(names))
@@ -717,16 +716,17 @@ func (d *DataRow) MatchFilter(filter *Filter) bool {
 	}
 
 	// if this is a optional column and we do not meet the requirements, match against an empty default column
-	if filter.ColumnOptional != NoFlags && !d.DataStore.Peer.HasFlag(filter.Column.Optional) {
+	if filter.ColumnOptional != NoFlags && !d.DataStore.Peer.HasFlag(filter.ColumnOptional) {
 		// duplicate filter, but use the empty column
 		f := &Filter{
-			Column:    d.DataStore.Table.GetEmptyColumn(),
-			Operator:  filter.Operator,
-			StrValue:  filter.StrValue,
-			Regexp:    filter.Regexp,
-			IsEmpty:   filter.IsEmpty,
-			CustomTag: filter.CustomTag,
-			Negate:    filter.Negate,
+			Column:      d.DataStore.Table.GetEmptyColumn(),
+			Operator:    filter.Operator,
+			StrValue:    filter.StrValue,
+			Regexp:      filter.Regexp,
+			IsEmpty:     filter.IsEmpty,
+			CustomTag:   filter.CustomTag,
+			Negate:      filter.Negate,
+			ColumnIndex: -1,
 		}
 		f.Column.DataType = filter.Column.DataType
 		if f.Negate {
@@ -752,72 +752,70 @@ func (d *DataRow) getStatsKey(res *Response) string {
 }
 
 // UpdateValues updates this datarow with new values
-func (d *DataRow) UpdateValues(dataOffset int, data []interface{}, columns ColumnList, timestamp int64) error {
+func (d *DataRow) UpdateValues(dataOffset int, data []interface{}, columns ColumnList, timestamp float64) error {
 	if len(columns) != len(data)-dataOffset {
 		return fmt.Errorf("table %s update failed, data size mismatch, expected %d columns and got %d", d.DataStore.Table.Name.String(), len(columns), len(data))
 	}
 	for i, col := range columns {
+		localIndex := col.Index
 		if col.StorageType != LocalStore {
 			continue
 		}
-		if col.Optional != NoFlags && !d.DataStore.Peer.HasFlag(col.Optional) {
-			continue
-		}
-		i += dataOffset
+		resIndex := i + dataOffset
 		switch col.DataType {
 		case StringCol:
-			d.dataString[col.Index] = *(interface2string(data[i]))
+			d.dataString[localIndex] = *(interface2string(data[resIndex]))
 		case StringListCol:
 			if col.FetchType == Static {
 				// deduplicate string lists
-				d.dataStringList[col.Index] = d.deduplicateStringlist(interface2stringlist(data[i]))
+				d.dataStringList[localIndex] = d.deduplicateStringlist(interface2stringlist(data[resIndex]))
 			} else {
-				d.dataStringList[col.Index] = interface2stringlist(data[i])
+				d.dataStringList[localIndex] = interface2stringlist(data[resIndex])
 			}
 		case StringLargeCol:
-			d.dataStringLarge[col.Index] = *interface2stringlarge(data[i])
+			d.dataStringLarge[localIndex] = *interface2stringlarge(data[resIndex])
 		case IntCol:
-			d.dataInt[col.Index] = interface2int(data[i])
+			d.dataInt[localIndex] = interface2int(data[resIndex])
 		case Int64Col:
-			d.dataInt64[col.Index] = interface2int64(data[i])
+			d.dataInt64[localIndex] = interface2int64(data[resIndex])
 		case Int64ListCol:
-			d.dataInt64List[col.Index] = interface2int64list(data[i])
+			d.dataInt64List[localIndex] = interface2int64list(data[resIndex])
 		case FloatCol:
-			d.dataFloat[col.Index] = interface2float64(data[i])
+			d.dataFloat[localIndex] = interface2float64(data[resIndex])
 		case ServiceMemberListCol:
-			d.dataServiceMemberList[col.Index] = interface2servicememberlist(data[i])
+			d.dataServiceMemberList[localIndex] = interface2servicememberlist(data[resIndex])
 		case InterfaceListCol:
-			d.dataInterfaceList[col.Index] = interface2interfacelist(data[i])
+			d.dataInterfaceList[localIndex] = interface2interfacelist(data[resIndex])
 		default:
 			log.Panicf("unsupported column %s (type %d) in table %s", col.Name, col.DataType, d.DataStore.Table.Name)
 		}
 	}
 	if timestamp == 0 {
-		timestamp = time.Now().Unix()
+		timestamp = currentUnixTime()
 	}
 	d.LastUpdate = timestamp
 	return nil
 }
 
 // UpdateValuesNumberOnly updates this datarow with new values but skips strings
-func (d *DataRow) UpdateValuesNumberOnly(dataOffset int, data []interface{}, columns ColumnList, timestamp int64) error {
+func (d *DataRow) UpdateValuesNumberOnly(dataOffset int, data []interface{}, columns ColumnList, timestamp float64) error {
 	if len(columns) != len(data)-dataOffset {
 		return fmt.Errorf("table %s update failed, data size mismatch, expected %d columns and got %d", d.DataStore.Table.Name.String(), len(columns), len(data))
 	}
-	for i := range columns {
-		col := columns[i]
-		i += dataOffset
+	for i, col := range columns {
+		localIndex := col.Index
+		resIndex := i + dataOffset
 		switch col.DataType {
 		case IntCol:
-			d.dataInt[col.Index] = interface2int(data[i])
+			d.dataInt[localIndex] = interface2int(data[resIndex])
 		case Int64Col:
-			d.dataInt64[col.Index] = interface2int64(data[i])
+			d.dataInt64[localIndex] = interface2int64(data[resIndex])
 		case Int64ListCol:
-			d.dataInt64List[col.Index] = interface2int64list(data[i])
+			d.dataInt64List[localIndex] = interface2int64list(data[resIndex])
 		case FloatCol:
-			d.dataFloat[col.Index] = interface2float64(data[i])
+			d.dataFloat[localIndex] = interface2float64(data[resIndex])
 		case InterfaceListCol:
-			d.dataInterfaceList[col.Index] = interface2interfacelist(data[i])
+			d.dataInterfaceList[localIndex] = interface2interfacelist(data[resIndex])
 		}
 	}
 	d.LastUpdate = timestamp
@@ -827,13 +825,14 @@ func (d *DataRow) UpdateValuesNumberOnly(dataOffset int, data []interface{}, col
 // CheckChangedIntValues returns true if the given data results in an update
 func (d *DataRow) CheckChangedIntValues(dataOffset int, data []interface{}, columns ColumnList) bool {
 	for j, col := range columns {
+		index := col.Index
 		switch col.DataType {
 		case IntCol:
-			if interface2int(data[j+dataOffset]) != d.dataInt[columns[j].Index] {
+			if interface2int(data[j+dataOffset]) != d.dataInt[index] {
 				return true
 			}
 		case Int64Col:
-			if interface2int64(data[j+dataOffset]) != d.dataInt64[columns[j].Index] {
+			if interface2int64(data[j+dataOffset]) != d.dataInt64[index] {
 				return true
 			}
 		}
@@ -1322,8 +1321,8 @@ func (d *DataRow) WriteJSONVirtualColumn(jsonwriter *jsoniter.Stream, col *Colum
 		}
 		jsonwriter.WriteArrayEnd()
 	case CustomVarCol:
-		namesCol := d.DataStore.Table.GetColumn("custom_variable_names")
-		valuesCol := d.DataStore.Table.GetColumn("custom_variable_values")
+		namesCol := d.DataStore.GetColumn("custom_variable_names")
+		valuesCol := d.DataStore.GetColumn("custom_variable_values")
 		if namesCol.Optional != NoFlags && !d.DataStore.Peer.HasFlag(namesCol.Optional) {
 			jsonwriter.WriteObjectStart()
 			jsonwriter.WriteObjectEnd()

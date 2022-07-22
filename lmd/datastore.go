@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"sort"
 	"strings"
-	"time"
 )
 
 // DataStore contains the actual data rows with a reference to the table and peer.
@@ -12,17 +11,17 @@ type DataStore struct {
 	noCopy                  noCopy
 	DynamicColumnCache      ColumnList                     // contains list of columns used to run periodic update
 	DynamicColumnNamesCache []string                       // contains list of keys used to run periodic update
-	DataSizes               map[DataType]int               // contains the sizes for each data type
 	Peer                    *Peer                          // reference to our peer
 	PeerName                string                         // cached peer name
 	PeerKey                 string                         // cached peer key
+	PeerLockMode            PeerLockMode                   // flag wether datarow have to set PeerLock when accessing status
 	DataSet                 *DataStoreSet                  // reference to parent DataSet
 	Data                    []*DataRow                     // the actual data rows
 	Index                   map[string]*DataRow            // access data rows from primary key, ex.: hostname or comment id
 	Index2                  map[string]map[string]*DataRow // access data rows from 2 primary keys, ex.: host and service
 	Table                   *Table                         // reference to table definition
+	Columns                 ColumnList                     // reference to the used columns
 	dupStringList           map[[32]byte][]string          // lookup pointer to other stringlists during initialization
-	PeerLockMode            PeerLockMode                   // flag wether datarow have to set PeerLock when accessing status
 	LowerCaseColumns        map[int]int                    // list of string column indexes with their coresponding lower case index
 }
 
@@ -49,24 +48,20 @@ func NewDataStore(table *Table, peer interface{}) (d *DataStore) {
 	}
 
 	// create columns list
-	dataSizes := map[DataType]int{
-		StringCol:     0,
-		StringListCol: 0,
-		IntCol:        0,
-		Int64ListCol:  0,
-		FloatCol:      0,
-		CustomVarCol:  0,
-	}
+	table.Lock.Lock()
+	defer table.Lock.Unlock()
+	dataSizes := table.DataSizes
+
 	for i := range table.Columns {
 		col := table.Columns[i]
 		if col.Optional != NoFlags && !d.Peer.HasFlag(col.Optional) {
 			continue
 		}
 		if col.StorageType == LocalStore {
-			if col.Index != dataSizes[col.DataType] {
+			if col.Index == -1 {
 				col.Index = dataSizes[col.DataType]
+				dataSizes[col.DataType]++
 			}
-			dataSizes[col.DataType]++
 			if col.FetchType == Dynamic {
 				d.DynamicColumnNamesCache = append(d.DynamicColumnNamesCache, col.Name)
 				d.DynamicColumnCache = append(d.DynamicColumnCache, col)
@@ -77,7 +72,7 @@ func NewDataStore(table *Table, peer interface{}) (d *DataStore) {
 			}
 		}
 	}
-	d.DataSizes = dataSizes
+
 	// prepend primary keys to dynamic keys, since they are required to map the results back to specific items
 	if len(d.DynamicColumnNamesCache) > 0 {
 		d.DynamicColumnNamesCache = append(d.Table.PrimaryKey, d.DynamicColumnNamesCache...)
@@ -87,7 +82,7 @@ func NewDataStore(table *Table, peer interface{}) (d *DataStore) {
 
 // InsertData adds a list of results and initializes the store table
 func (d *DataStore) InsertData(rows ResultSet, columns ColumnList, setReferences bool) error {
-	now := time.Now().Unix()
+	now := currentUnixTime()
 	switch len(d.Table.PrimaryKey) {
 	case 0:
 	case 1:
@@ -97,6 +92,8 @@ func (d *DataStore) InsertData(rows ResultSet, columns ColumnList, setReferences
 	default:
 		panic("not supported number of primary keys")
 	}
+	d.Table.Lock.RLock()
+	defer d.Table.Lock.RUnlock()
 	d.Data = make([]*DataRow, len(rows))
 	for i, data := range rows {
 		row, err := NewDataRow(d, data, columns, now, setReferences)
@@ -115,7 +112,8 @@ func (d *DataStore) InsertData(rows ResultSet, columns ColumnList, setReferences
 func (d *DataStore) AppendData(data ResultSet, columns ColumnList) error {
 	d.DataSet.Lock.Lock()
 	defer d.DataSet.Lock.Unlock()
-
+	d.Table.Lock.RLock()
+	defer d.Table.Lock.RUnlock()
 	if d.Index == nil {
 		// should not happen but might indicate a recent restart or backend issue
 		return fmt.Errorf("index not ready, cannot append data")

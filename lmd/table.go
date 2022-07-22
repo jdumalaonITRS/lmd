@@ -3,6 +3,8 @@ package main
 import (
 	"fmt"
 	"strings"
+
+	"github.com/sasha-s/go-deadlock"
 )
 
 // TableRef contains data for referenced tables
@@ -153,8 +155,10 @@ type Table struct {
 	PrimaryKey      []string
 	RefTables       []TableRef // referenced tables
 	Virtual         VirtualStoreResolveFunc
-	DefaultSort     []string     // columns used to sort if nothing is specified
-	PeerLockMode    PeerLockMode // should the peer be locked once for the complete result or on each access
+	DefaultSort     []string          // columns used to sort if nothing is specified
+	PeerLockMode    PeerLockMode      // should the peer be locked once for the complete result or on each access
+	Lock            *deadlock.RWMutex // must be used for DataSizes access
+	DataSizes       map[DataType]int  // contains size used for the datastore
 }
 
 // GetColumn returns a column for given name or nil if not found
@@ -238,22 +242,5 @@ func (t *Table) AddRefColumns(tableName TableName, prefix string, localName []st
 			continue
 		}
 		NewColumn(t, refColName, RefStore, None, col.DataType, col.Optional, col, col.Description)
-	}
-}
-
-// SetColumnIndex sets index for all columns
-func (t *Table) SetColumnIndex() {
-	indexes := make(map[DataType]int)
-	for i := range t.Columns {
-		col := t.Columns[i]
-		if col.StorageType != LocalStore {
-			continue
-		}
-		_, ok := indexes[col.DataType]
-		if !ok {
-			indexes[col.DataType] = 0
-		}
-		col.Index = indexes[col.DataType]
-		indexes[col.DataType]++
 	}
 }
