@@ -42,7 +42,7 @@ var Build string
 
 const (
 	// VERSION contains the actual lmd version
-	VERSION = "2.0.9"
+	VERSION = "2.1.0"
 	// NAME defines the name of this project
 	NAME = "lmd"
 
@@ -282,7 +282,7 @@ func (lmd *LMDInstance) mainLoop() (exitCode int) {
 	}
 
 	if lmd.flags.flagProfile != "" {
-		log.Warnf("pprof profiler listening at %s", lmd.flags.flagProfile)
+		log.Warnf("pprof profiler listening at http://%s/debug/pprof/", lmd.flags.flagProfile)
 	}
 
 	once.Do(lmd.PrintVersion)
@@ -541,6 +541,7 @@ func (lmd *LMDInstance) checkFlags() {
 			fmt.Printf("ERROR: could not start CPU profile: %s", err.Error())
 			os.Exit(ExitCritical)
 		}
+		lmd.cpuProfileHandler = cpuProfileHandler
 	}
 
 	if lmd.flags.flagDeadlock <= 0 {
