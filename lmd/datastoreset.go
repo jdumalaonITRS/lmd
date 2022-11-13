@@ -396,7 +396,7 @@ func (ds *DataStoreSet) UpdateDeltaFullScan(store *DataStore, statusKey PeerStat
 	p := ds.peer
 	lastUpdate := p.StatusGet(statusKey).(float64)
 
-	// do not do a full scan more often than every 30 seconds
+	// do not do a full scan more often than every 60 seconds
 	if lastUpdate > float64(time.Now().Unix()-MinFullScanInterval) {
 		return
 	}
@@ -442,7 +442,6 @@ func (ds *DataStoreSet) UpdateDeltaFullScan(store *DataStore, statusKey PeerStat
 	}
 
 	logWith(ds, req).Debugf("%s delta scan going to update %d timestamps", store.Table.Name.String(), len(missing))
-	filter := []string{filterStr}
 	timestampFilter := composeTimestampFilter(missing, "last_check")
 	if len(timestampFilter) > 100 {
 		msg := fmt.Sprintf("%s delta scan timestamp filter too complex: %d", store.Table.Name.String(), len(timestampFilter))
@@ -451,12 +450,19 @@ func (ds *DataStoreSet) UpdateDeltaFullScan(store *DataStore, statusKey PeerStat
 		} else {
 			logWith(ds, req).Debugf("%s", msg)
 		}
-		timestampFilter = []string{}
+		// sync at least a few to get back on track
+		timestampFilter = timestampFilter[0:99]
 	}
 
-	filter = append(filter, timestampFilter...)
-	if len(filterStr) > 0 {
-		filter = append(filter, "Or: 2\n")
+	filter := []string{}
+	if filterStr != "" {
+		filter = append(filter, filterStr)
+		if len(timestampFilter) > 0 {
+			filter = append(filter, timestampFilter...)
+			filter = append(filter, "Or: 2\n")
+		}
+	} else {
+		filter = append(filter, timestampFilter...)
 	}
 
 	err = updateFn(strings.Join(filter, ""), false)

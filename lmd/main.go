@@ -2,7 +2,7 @@
 LMD - Livestatus Multitool daemon
 A livestatus in/out converter and caching daemon.
 
-Help
+# Help
 
 Use `lmd -h` to get help on command line parameters.
 */
@@ -32,6 +32,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/OneOfOne/xxhash"
 	"github.com/lkarlslund/stringdedup"
 	"github.com/sasha-s/go-deadlock"
 )
@@ -42,7 +43,7 @@ var Build string
 
 const (
 	// VERSION contains the actual lmd version
-	VERSION = "2.1.0"
+	VERSION = "2.1.2"
 	// NAME defines the name of this project
 	NAME = "lmd"
 
@@ -124,6 +125,8 @@ func (c ConnectionType) String() string {
 	log.Panicf("not implemented: %#v", c)
 	return ""
 }
+
+var dedup = stringdedup.New(xxhash.Checksum32)
 
 type LMDInstance struct {
 	Config            *Config              // reference to global config object
@@ -869,9 +872,9 @@ func ByteCountBinary(b int64) string {
 }
 
 func updateStatistics(qStat *QueryStats) {
-	size := stringdedup.Size()
+	size := dedup.Size()
 	promStringDedupCount.Set(float64(size))
-	promStringDedupBytes.Set(float64(stringdedup.ByteCount()))
+	promStringDedupBytes.Set(float64(dedup.Statistics().BytesInMemory))
 	promStringDedupIndexBytes.Set(float64(32 * size))
 	if qStat != nil {
 		qStat.LogTrigger <- true

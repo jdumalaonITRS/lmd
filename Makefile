@@ -8,8 +8,8 @@ GOVERSION:=$(shell \
     awk -F'go| ' '{ split($$5, a, /\./); printf ("%04d%04d", a[1], a[2]); exit; }' \
 )
 # also update README.md when changing minumum version
-MINGOVERSION:=00010017
-MINGOVERSIONSTR:=1.17
+MINGOVERSION:=00010018
+MINGOVERSIONSTR:=1.18
 BUILD:=$(shell git rev-parse --short HEAD)
 # see https://github.com/go-modules-by-example/index/blob/master/010_tools/README.md
 # and https://github.com/golang/go/wiki/Modules#how-can-i-track-tool-dependencies-for-a-module
@@ -59,7 +59,7 @@ build-linux-amd64: vendor
 	cd $(LAMPDDIR) && GOOS=linux GOARCH=amd64 go build -ldflags "-s -w -X main.Build=$(BUILD)" -o lmd.linux.amd64
 
 debugbuild: fmt dump vendor
-	cd $(LAMPDDIR) && go build -race -ldflags "-X main.Build=$(BUILD)"
+	cd $(LAMPDDIR) && go build -race -ldflags "-X main.Build=$(BUILD)" -gcflags "-d=checkptr=0"
 
 devbuild: debugbuild
 
@@ -95,6 +95,7 @@ citest: vendor
 	# Run other subtests
 	#
 	$(MAKE) golangci
+	$(MAKE) govulncheck
 	$(MAKE) fmt
 	#
 	# Normal test cases
@@ -117,7 +118,7 @@ benchmark: fmt
 	cd $(LAMPDDIR) && go test -ldflags "-s -w -X main.Build=$(BUILD)" -v -bench=B\* -benchtime 10s -run=^$$ . -benchmem
 
 racetest: fmt
-	cd $(LAMPDDIR) && go test -race -short -v
+	cd $(LAMPDDIR) && go test -race -short -v -gcflags "-d=checkptr=0"
 
 covertest: fmt
 	cd $(LAMPDDIR) && go test -v -coverprofile=cover.out
@@ -159,6 +160,9 @@ golangci: tools
 	# See https://github.com/golangci/golangci-lint
 	#
 	golangci-lint run $(LAMPDDIR)/...
+
+govulncheck: tools
+	govulncheck ./...
 
 version:
 	OLDVERSION="$(shell grep "VERSION =" $(LAMPDDIR)/main.go | awk '{print $$3}' | tr -d '"')"; \

@@ -9,7 +9,6 @@ import (
 	"sync/atomic"
 
 	jsoniter "github.com/json-iterator/go"
-	"github.com/lkarlslund/stringdedup"
 )
 
 const ListSepChar1 = "\x00"
@@ -825,14 +824,13 @@ func (d *DataRow) UpdateValuesNumberOnly(dataOffset int, data []interface{}, col
 // CheckChangedIntValues returns true if the given data results in an update
 func (d *DataRow) CheckChangedIntValues(dataOffset int, data []interface{}, columns ColumnList) bool {
 	for j, col := range columns {
-		index := col.Index
 		switch col.DataType {
 		case IntCol:
-			if interface2int(data[j+dataOffset]) != d.dataInt[index] {
+			if interface2int(data[j+dataOffset]) != d.dataInt[col.Index] {
 				return true
 			}
 		case Int64Col:
-			if interface2int64(data[j+dataOffset]) != d.dataInt64[index] {
+			if interface2int64(data[j+dataOffset]) != d.dataInt64[col.Index] {
 				return true
 			}
 		}
@@ -908,7 +906,13 @@ func interface2int64(in interface{}) int64 {
 func interface2string(in interface{}) *string {
 	switch v := in.(type) {
 	case string:
-		dedupedstring := stringdedup.S(v)
+		dedupedstring := dedup.S(v)
+		return &dedupedstring
+	case []byte:
+		dedupedstring := dedup.BS(v)
+		return &dedupedstring
+	case *[]byte:
+		dedupedstring := dedup.BS(*v)
 		return &dedupedstring
 	case *string:
 		return v
@@ -916,8 +920,8 @@ func interface2string(in interface{}) *string {
 		val := ""
 		return &val
 	}
-	str := fmt.Sprintf("%v", in)
-	return &str
+	dedupedstring := dedup.S(fmt.Sprintf("%v", in))
+	return &dedupedstring
 }
 
 func interface2stringNoDedup(in interface{}) string {

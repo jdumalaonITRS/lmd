@@ -1813,7 +1813,7 @@ func (p *Peer) HTTPQuery(req *Request, peerAddr string, query string) (res []byt
 // HTTPPostQueryResult returns response array from thruk api
 func (p *Peer) HTTPPostQueryResult(query *Request, peerAddr string, postData url.Values, headers map[string]string) (result *HTTPResult, err error) {
 	ctx := context.Background()
-	req, err := http.NewRequestWithContext(ctx, "POST", peerAddr, strings.NewReader(postData.Encode()))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, peerAddr, strings.NewReader(postData.Encode()))
 	if err != nil {
 		logWith(p, query).Debugf("http(s) error: %s", fmtHTTPerr(req, err))
 		return nil, fmt.Errorf("http request: %w", err)
@@ -1960,7 +1960,7 @@ func ExtractHTTPResponse(response *http.Response) (contents []byte, err error) {
 		return
 	}
 
-	if response.StatusCode != 200 {
+	if response.StatusCode != http.StatusOK {
 		matched := reHTTPOMDError.FindStringSubmatch(string(contents))
 		if len(matched) > 1 {
 			err = &PeerError{msg: fmt.Sprintf("http request failed: %s - %s", response.Status, matched[1]), kind: ResponseError}
