@@ -1,7 +1,4 @@
-# Remove this comment when releasing LMD 2.0.4
 %global debug_package %{nil}
-%global golang_version 1.15.6
-
 Name:		op5-lmd
 Version:	%{op5version}
 Release:	%{op5release}%{?dist}
@@ -13,7 +10,7 @@ Patch0:		op5build/Makefile.patch
 BuildRoot:	%{_tmppath}/%{name}-%{version}
 
 BuildRequires: git
-BuildRequires: golang >= 1.14
+BuildRequires: golang >= 1.18
 Requires: op5-naemon
 Requires: monitor-livestatus
 %systemd_requires
@@ -117,6 +114,8 @@ fi
 rm -rf %buildroot
 
 %changelog
+* Sun Nov 13 2022 Aksel Sjögren <asjogren@itrsgroup.com>
+- Bump required golang version to 1.18
 * Fri Feb 12 2021 Aksel Sjögren <asjogren@itrsgroup.com> - 2021.3
 - Remove EL6 and pre-systemd support.
 - Use golang from OS repos when building package.

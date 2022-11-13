@@ -1,13 +1,6 @@
 pre:
-  exclude: ['el6/x86_64']
   steps: |
     set -ex
-
-    # On EL7 we need to use a the proxy, due to the git version being older than what GO supports when downloading dependencies.
-    . /etc/os-release || :
-    if [ "$VERSION_ID" == "7" ]; then
-      export GOPROXY="https://proxy.golang.org,direct"
-    fi
     go env
     # Download all dependencies before rpm build.
     cd src
